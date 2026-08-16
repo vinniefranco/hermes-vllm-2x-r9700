@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Local / generated / secret state — NOT committed.
+# Everything else (compose.yaml, build/, configs/{caddy/conf,squid,env,fp8,
+# fused_moe,patches,chat-templates}) IS the setup and should be committed so the
+# stack can be spun up with `podman compose up -d` on a fresh checkout.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Model weights / HuggingFace cache (~28 GB) — re-downloaded on first run
+models/
+
+# Agent workspace — its coding sandbox, local work product
+projects/
+
+# Hermes runtime state & SECRETS: config.yaml (session secret, password hash),
+# .env (API_SERVER_KEY), auth.json, sessions, memories, logs, sqlite DBs, etc.
+# Recreated on first run. See hermes-config.example.yaml for the seed config.
+hermes-data/
+
+# Caddy runtime data & SECRETS: the internal CA private keys (root.key,
+# intermediate.key) and all issued cert keys. A fresh CA is generated on first
+# run (clients then re-trust the new root.crt).
+configs/caddy/data/
+configs/caddy/config/
+
+# Misc
+*.log
+.DS_Store
+scratch/
+tmp/

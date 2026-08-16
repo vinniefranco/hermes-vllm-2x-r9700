@@ -1,0 +1,40 @@
+# Seed configuration for Hermes Agent — copy to hermes-data/config.yaml on first
+# setup (the real file is gitignored because it holds secrets). Hermes will
+# normalize/extend this on first run (adds _config_version, custom_providers).
+#
+#   mkdir -p hermes-data
+#   cp hermes-config.example.yaml hermes-data/config.yaml
+#   # then set a dashboard password + a session secret (see below)
+
+# Model backend = the local vLLM container. api_key must be a NON-EMPTY dummy
+# (vLLM ignores it); do NOT use "none" — Hermes reads that as "no key" and the
+# desktop app fails credential resolution.
+model:
+  provider: custom
+  base_url: http://vllm:8180/v1
+  api_key: "sk-local-vllm"
+  default: qwen3.8-27b
+
+custom_providers:
+  - name: vllm
+    base_url: http://vllm:8180/v1
+    model: qwen3.8-27b
+    models:
+      - qwen3.8-27b
+
+# Agent runs its shell inside the hermes container (the sandbox) and works here.
+# /projects is bind-mounted to ./projects; the agent cannot reach the host.
+terminal:
+  backend: local
+  cwd: /projects
+
+# Dashboard / desktop-app login. FILL THESE IN before use:
+#   password_hash: podman run --rm --entrypoint python nousresearch/hermes-agent \
+#                    -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('YOUR-PASSWORD'))"
+#   secret:        openssl rand -hex 32   (REQUIRED — without it, every restart
+#                  invalidates all logins with session_expired)
+dashboard:
+  basic_auth:
+    username: vinnie
+    password_hash: "REPLACE_WITH_SCRYPT_HASH"
+    secret: "REPLACE_WITH_openssl_rand_hex_32"

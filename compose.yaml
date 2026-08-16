@@ -1,0 +1,205 @@
+# vLLM (Qwen3.8-27B-FP8, 2x AMD R9700) + Hermes Agent — podman compose
+#
+# vLLM service is derived from https://github.com/prcoe1/r9700-serving (used as
+# reference; its qwen3.8-27b profile and tunables are baked in here). Image is
+# built from ./build/Containerfile. Tweakable state lives in host dirs: ./models (HF cache/weights), ./configs (tuned kernel configs,
+# runtime patches, env), ./hermes-data (Hermes config + state). Config changes
+# need only a restart, never a rebuild.
+#
+# First time: podman compose build vllm   (long source build: vLLM 0.27.1 + AITER + flash-attn for gfx1201)
+# Then:       podman compose up -d        (first run downloads ~28 GB of weights into ./models)
+
+services:
+  vllm:
+    image: localhost/vllm-fullbuild:latest
+    build:
+      context: ./build
+      dockerfile: Containerfile
+      args:
+        ROCM_IMAGE: docker.io/rocm/dev-ubuntu-24.04:7.14.0-full
+        GPU_ARCH: gfx1201
+        MAX_JOBS: "8"                # host has 30 GB RAM; repo default 16 risks compile OOM
+        TORCH_VERSION: 2.13.0+rocm7.14.0
+        TORCHVISION_VERSION: 0.28.0+rocm7.14.0
+        VLLM_REF: v0.27.1
+        VLLM_VERSION: 0.27.1
+        AITER_REF: v0.1.19.post2
+        FLASH_ATTN_REF: 1cc7ff67cbc5685046c75183e8defecca3e35d5c
+    container_name: vllm
+    restart: unless-stopped
+    user: "1000:1000"
+    userns_mode: keep-id             # rootless podman: container uid 1000 == host user, keeps mounts user-owned
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - "video"
+      - "105"                        # host render group gid (getent group render)
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - label=disable                # SELinux: required for /dev/kfd + /dev/dri
+    ipc: host                        # podman-compose ignores this (leaves 62MiB shm), hence shm_size below
+    shm_size: 16g                    # vLLM TP=2 IPC message queues; matches vLLM's documented default (a cap on tmpfs, not a RAM reservation)
+    networks:
+      - stack                        # intra-stack: caddy proxies to vllm:8180 here
+      - egress                       # outbound internet for HuggingFace pulls/updates (trusted server)
+    # No published port: vLLM is reachable ONLY in-cluster (caddy proxies to
+    # vllm:8180). All external access is TLS via Caddy :443; egress is outbound-only.
+    expose:
+      - "8180"
+    env_file:
+      - ./configs/env/2xr9700.vllm.common        # HIP/HSA/NCCL tuning for 2x R9700
+      - ./configs/env/aiter-unified-attention.env # AITER unified attention only; other AITER paths JIT-freeze on RDNA4
+    environment:
+      HOME: /home/vinnie
+      HF_HOME: /models               # weights + tokenizer + bundled chat template land in ./models
+      # JIT/kernel caches under the bind-mounted $HOME so they persist and stay user-owned.
+      # AITER_JIT_DIR must be set or non-root runs fall back to a dir off sys.path and
+      # the unified-attention backend fails to import.
+      AITER_JIT_DIR: /home/vinnie/.cache/aiter/jit
+      TRITON_CACHE_DIR: /home/vinnie/.cache/triton
+      TORCHINDUCTOR_CACHE_DIR: /home/vinnie/.cache/torchinductor
+      TILELANG_CACHE_DIR: /home/vinnie/.cache/tilelang
+      GPU_MAX_HW_QUEUES: "1"         # avoids ~55-63% RDNA4 decode regression
+      NCCL_P2P_DISABLE: "1"          # the two cards sit on separate PCIe roots
+      VLLM_TUNED_CONFIG_FOLDER: /app/fused_moe_configs
+    volumes:
+      - ./models:/models
+      - ./configs/fused_moe:/app/fused_moe_configs
+      # Per-shape FP8 GEMM configs tuned for the R9700, overlaid onto vLLM's config dir:
+      - "./configs/fp8/N=2048,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=2048,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
+      - "./configs/fp8/N=2048,K=256,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=2048,K=256,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
+      - "./configs/fp8/N=4608,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=4608,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
+      - "./configs/fp8/N=512,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=512,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
+      - "./configs/fp8/N=6144,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=6144,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
+      - "./configs/fp8/N=17408,K=5120,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=17408,K=5120,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
+      - "./configs/fp8/N=5120,K=3072,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=5120,K=3072,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
+      - "./configs/fp8/N=5120,K=8704,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=5120,K=8704,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
+      - "./configs/fp8/N=7168,K=5120,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=7168,K=5120,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
+      - "./configs/fp8/N=8192,K=5120,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=8192,K=5120,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
+      # Runtime patch overlays (version-locked: vLLM v0.27.1 / AITER v0.1.19.post2 — refresh on upgrade):
+      # protocol.py: tolerate `tools: []` + `tool_choice: "none"` from some clients.
+      - ./configs/patches/protocol.py:/opt/venv/lib/python3.12/site-packages/vllm/entrypoints/openai/chat_completion/protocol.py:ro
+      # torch_guard.py: fix aiter double-namespaced op names crashing torch cache clear at exit.
+      - ./configs/patches/torch_guard.py:/opt/venv/lib/python3.12/site-packages/aiter/jit/utils/torch_guard.py:ro
+      # Whole home for JIT/kernel caches (AITER, Triton, inductor) — persist across restarts:
+      - /home/vinnie:/home/vinnie
+      - /home/vinnie/.vllm-workspace:/workspace
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8180/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 40
+      start_period: 900s             # first start downloads weights + JIT-compiles kernels
+    # Image entrypoint is `vllm serve`; model is the positional arg.
+    # No --chat-template: use the model's own bundled template. If tool-calling
+    # misbehaves, a known-good fixed template is at ./configs/chat-templates/qwen.jinja
+    # (mount it and add: --chat-template /app/chat-templates/qwen.jinja).
+    command: >
+      Qwen/Qwen3.8-27B-FP8
+      --tokenizer Qwen/Qwen3.8-27B-FP8
+      --served-model-name qwen3.8-27b
+      --limit-mm-per-prompt '{"image": 99, "audio": 0, "video": 0}'
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --max-model-len 131072
+      --max-num-batched-tokens 8192
+      --enable-prefix-caching
+      --gpu-memory-utilization 0.85
+      --host 0.0.0.0
+      --port 8180
+      --dtype auto
+      --max-num-seqs 4
+      --kv-cache-dtype bfloat16
+      -tp 2
+      --attention-backend ROCM_AITER_UNIFIED_ATTN
+      --speculative-config '{"method": "mtp", "num_speculative_tokens": 3, "attention_backend": "ROCM_AITER_UNIFIED_ATTN"}'
+
+  # TLS termination (Caddy internal CA). vLLM's one port serves both API formats
+  # (OpenAI /v1/* and Anthropic /v1/messages — registered on the same server in
+  # vLLM 0.27), so coding harnesses can use either:
+  #   ANTHROPIC_BASE_URL=https://studio-lin   or   OPENAI_BASE_URL=https://studio-lin/v1
+  # Root CA to trust on clients: ./configs/caddy/data/caddy/pki/authorities/local/root.crt
+  # Port 443 requires: sysctl net.ipv4.ip_unprivileged_port_start=443 (rootless podman)
+  caddy:
+    image: docker.io/library/caddy:2
+    container_name: caddy
+    restart: unless-stopped
+    depends_on:
+      - vllm
+    networks:
+      - stack                        # internal-only; internal CA needs no egress, inbound publish still works
+    ports:
+      # 443 serves everything by hostname/path: llm.home… -> vLLM API,
+      # /hermes/* -> gateway, root -> dashboard.
+      - "443:443"
+      # 9119 (TLS) -> hermes dashboard backend, for Hermes Desktop's Remote Gateway.
+      - "9119:9119"
+    volumes:
+      # Directory (not file) mount so edits + `podman exec caddy caddy reload
+      # --config /etc/caddy/Caddyfile` work live (file mounts pin the old inode
+      # when an editor replaces the file):
+      - ./configs/caddy/conf:/etc/caddy:ro,Z
+      - ./configs/caddy/data:/data:Z
+      - ./configs/caddy/config:/config:Z
+
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes
+    restart: unless-stopped
+    command: gateway run
+    depends_on:
+      vllm:
+        condition: service_healthy
+    environment:
+      HERMES_DASHBOARD: "1"
+      API_SERVER_ENABLED: "true"   # OpenAI-compatible gateway on :8642 (proxied at https://.../hermes/v1)
+      API_SERVER_HOST: 0.0.0.0
+      # Gateway auth: the agent can run terminal commands, so the API must not be
+      # open to the LAN. The bearer key lives in hermes-data/.env (API_SERVER_KEY,
+      # auto-generated by Hermes; that file takes precedence over env set here).
+      #
+      # Egress control: hermes is on the internal-only `stack` net (no direct
+      # outbound), so all internet access goes through the squid proxy, which
+      # denies RFC1918/link-local/CGNAT. The agent's shell + web tools inherit
+      # these. NO_PROXY keeps intra-stack traffic (vLLM model calls) off the proxy
+      # — squid would otherwise deny vllm's 10.x address as "private".
+      HTTP_PROXY: http://squid:3128
+      HTTPS_PROXY: http://squid:3128
+      http_proxy: http://squid:3128
+      https_proxy: http://squid:3128
+      NO_PROXY: vllm,caddy,hermes,localhost,127.0.0.1,::1,.dns.podman
+      no_proxy: vllm,caddy,hermes,localhost,127.0.0.1,::1,.dns.podman
+    networks:
+      - stack
+    volumes:
+      - ./hermes-data:/opt/data:Z
+      - ./projects:/projects:Z          # agent's sandboxed workspace (owned by hermes uid 10000)
+    # No published ports: both the gateway (8642) and dashboard (9119) are reached
+    # ONLY through Caddy over TLS — gateway at https://…/hermes/v1, dashboard at
+    # https://…:9443. Nothing plaintext is exposed to the host/LAN.
+    expose:
+      - "8642"
+      - "9119"
+
+  # Egress proxy: the only path from the internal `stack` net to the internet.
+  # Allows public HTTP/HTTPS, denies all private ranges (see configs/squid/squid.conf).
+  # Dual-homed: `stack` (clients reach it) + `egress` (it reaches the internet).
+  squid:
+    image: docker.io/ubuntu/squid:latest
+    container_name: squid
+    restart: unless-stopped
+    volumes:
+      - ./configs/squid/squid.conf:/etc/squid/squid.conf:ro,Z
+    networks:
+      - stack
+      - egress
+
+networks:
+  stack:
+    driver: bridge
+    internal: true                   # no direct outbound for any stack service
+  egress:
+    driver: bridge                   # normal network with internet: squid (agent's proxied egress) + vllm (HF pulls)
