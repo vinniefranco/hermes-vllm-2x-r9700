@@ -16,6 +16,10 @@ projects/
 # Recreated on first run. See hermes-config.example.yaml for the seed config.
 hermes-data/
 
+# Honcho runtime state & SECRETS: Postgres data dir + .env (DB password).
+# Recreated on first run. See honcho-env.example for the seed env file.
+honcho-data/
+
 # Caddy runtime data & SECRETS: the internal CA private keys (root.key,
 # intermediate.key) and all issued cert keys. A fresh CA is generated on first
 # run (clients then re-trust the new root.crt).

@@ -1,0 +1,62 @@
+# Honcho (api + deriver) — non-secret settings. Secrets (DB password /
+# connection URI) live in ../../honcho-data/.env (gitignored).
+#
+# Every LLM feature is routed to the local vLLM container; the api_key is a
+# dummy (vLLM ignores it) but must be non-empty — the openai transport reads
+# LLM_OPENAI_API_KEY. Full variable reference:
+# https://github.com/plastic-labs/honcho/blob/main/.env.template
+
+LOG_LEVEL=INFO
+
+# No cloud keys: "openai" here is just the transport (OpenAI-compatible API).
+LLM_OPENAI_API_KEY=sk-local-vllm
+
+# ── Deriver (memory extraction) ───────────────────────────────────────────────
+DERIVER_MODEL_CONFIG__MODEL=qwen3.8-27b
+DERIVER_MODEL_CONFIG__OVERRIDES__BASE_URL=http://vllm:8180/v1
+# Low-traffic personal stack: process memory work immediately instead of
+# batching up to 30 min — facts become recallable right after a conversation.
+DERIVER_FLUSH_ENABLED=true
+
+# ── Summaries ────────────────────────────────────────────────────────────────
+SUMMARY_MODEL_CONFIG__MODEL=qwen3.8-27b
+SUMMARY_MODEL_CONFIG__OVERRIDES__BASE_URL=http://vllm:8180/v1
+
+# ── Dream (offline consolidation) ────────────────────────────────────────────
+DREAM_DEDUCTION_MODEL_CONFIG__MODEL=qwen3.8-27b
+DREAM_DEDUCTION_MODEL_CONFIG__OVERRIDES__BASE_URL=http://vllm:8180/v1
+DREAM_INDUCTION_MODEL_CONFIG__MODEL=qwen3.8-27b
+DREAM_INDUCTION_MODEL_CONFIG__OVERRIDES__BASE_URL=http://vllm:8180/v1
+
+# ── Dialectic (the .chat() reasoning Hermes queries) ─────────────────────────
+DIALECTIC_LEVELS__minimal__MODEL_CONFIG__MODEL=qwen3.8-27b
+DIALECTIC_LEVELS__minimal__MODEL_CONFIG__OVERRIDES__BASE_URL=http://vllm:8180/v1
+DIALECTIC_LEVELS__low__MODEL_CONFIG__MODEL=qwen3.8-27b
+DIALECTIC_LEVELS__low__MODEL_CONFIG__OVERRIDES__BASE_URL=http://vllm:8180/v1
+DIALECTIC_LEVELS__medium__MODEL_CONFIG__MODEL=qwen3.8-27b
+DIALECTIC_LEVELS__medium__MODEL_CONFIG__OVERRIDES__BASE_URL=http://vllm:8180/v1
+DIALECTIC_LEVELS__high__MODEL_CONFIG__MODEL=qwen3.8-27b
+DIALECTIC_LEVELS__high__MODEL_CONFIG__OVERRIDES__BASE_URL=http://vllm:8180/v1
+DIALECTIC_LEVELS__max__MODEL_CONFIG__MODEL=qwen3.8-27b
+DIALECTIC_LEVELS__max__MODEL_CONFIG__OVERRIDES__BASE_URL=http://vllm:8180/v1
+
+# ── Embeddings → local TEI (Qwen3-Embedding-0.6B, 1024-dim, CPU) ─────────────
+# Dimensions are baked into the pgvector schema at first migration; changing
+# the embedding model later means changing this AND re-provisioning vectors.
+EMBEDDING_MODEL_CONFIG__MODEL=Qwen/Qwen3-Embedding-0.6B
+EMBEDDING_MODEL_CONFIG__OVERRIDES__BASE_URL=http://honcho-embeddings:80/v1
+EMBEDDING_VECTOR_DIMENSIONS=1024
+# Keep inputs within TEI's 4096-token batch budget (see compose command).
+EMBEDDING_MAX_INPUT_TOKENS=2048
+EMBEDDING_MAX_TOKENS_PER_REQUEST=4096
+
+# ── Storage / infra ──────────────────────────────────────────────────────────
+VECTOR_STORE_TYPE=pgvector
+CACHE_ENABLED=false
+TELEMETRY_ENABLED=false
+SENTRY_ENABLED=false
+
+# Internal-only deployment: only containers on the `stack` net can reach the
+# API, so JWT auth stays off. Enable (plus AUTH_JWT_SECRET) before ever
+# exposing Honcho through Caddy.
+AUTH_USE_AUTH=false

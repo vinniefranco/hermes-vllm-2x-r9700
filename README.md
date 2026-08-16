@@ -23,6 +23,13 @@ host-specific things (GPU arch, group IDs, firewall, DNS) will differ.
 - **Squid** — an egress proxy. The agent is on an internal-only network and reaches
   the internet through Squid, which blocks all private/LAN addresses. So the agent
   can pip/git/curl the internet but can't reach anything on your LAN.
+- **Honcho** — self-hosted long-term memory for the agent
+  ([plastic-labs/honcho](https://github.com/plastic-labs/honcho)): an API server,
+  a background "deriver" worker that turns conversations into a user model,
+  a pgvector Postgres, and a CPU embeddings server (TEI running
+  `Qwen/Qwen3-Embedding-0.6B` — the GPUs are fully committed to vLLM). All of
+  Honcho's LLM calls route to the local vLLM; nothing goes to a cloud API.
+  Hermes uses it through its built-in `honcho` memory plugin.
 
 ## How traffic flows
 
@@ -82,13 +89,33 @@ way to the model is through TLS.
      ```
      Paste it into `secret`.
 
-2. **Build the vLLM image.** This is a from-source build and takes a while (order
+2. **Seed the Honcho secrets.**
+   ```
+   mkdir -p honcho-data
+   cp honcho-env.example honcho-data/.env
+   # replace REPLACE_ME in both lines with: openssl rand -hex 24
+   ```
+   The non-secret Honcho settings (model routing to vLLM, embeddings, feature
+   flags) live in `configs/env/honcho.common` and are committed.
+
+   One first-boot quirk: Honcho's initial migration creates 1536-dim vector
+   columns, but our embedding model is 1024-dim. If the API exits with
+   `documents.embedding dim (1536) does not match EMBEDDING_VECTOR_DIMENSIONS`,
+   resize the (empty) columns once:
+   ```
+   podman run --rm --network hermes_stack \
+     --env-file configs/env/honcho.common --env-file honcho-data/.env \
+     --entrypoint /app/.venv/bin/python ghcr.io/plastic-labs/honcho:latest \
+     scripts/configure_embeddings.py --yes
+   ```
+
+3. **Build the vLLM image.** This is a from-source build and takes a while (order
    of an hour on a cold cache):
    ```
    podman compose build vllm
    ```
 
-3. **Bring it up.**
+4. **Bring it up.**
    ```
    podman compose up -d
    ```
@@ -96,7 +123,27 @@ way to the model is through TLS.
    generates its internal CA. Watch it come up with `podman logs -f vllm` — it's
    ready when the health check passes and Hermes starts.
 
-4. **Trust the CA on your machines.** Caddy signs with its own CA, so browsers and
+5. **Enable the Hermes↔Honcho hookup.** Hermes finds Honcho via
+   `hermes-data/honcho.json` (baseUrl `http://honcho:8000`, workspace/peer
+   names) and `memory.provider: honcho` in its config:
+   ```
+   podman unshare tee hermes-data/honcho.json <<'EOF'
+   {
+     "baseUrl": "http://honcho:8000",
+     "environment": "local",
+     "apiKey": "local",
+     "workspace": "hermes",
+     "peerName": "vinnie",
+     "aiPeer": "hermes"
+   }
+   EOF
+   podman exec hermes hermes config set memory.provider honcho
+   podman compose up -d hermes   # recreate so env/config take effect
+   ```
+   Check it with `podman exec hermes hermes memory status` — Honcho should show
+   as the active provider.
+
+6. **Trust the CA on your machines.** Caddy signs with its own CA, so browsers and
    apps will warn until you trust the root. It's at:
    ```
    configs/caddy/data/caddy/pki/authorities/local/root.crt
@@ -141,9 +188,14 @@ agent runs in the container, not on your machine, and its shell is boxed into
 - `configs/env/`, `configs/fp8/`, `configs/fused_moe/`, `configs/patches/` — vLLM
   tuning for the R9700 (kernel configs, env, runtime patches). These come from
   the r9700-serving project and are what makes it fast on this card.
+- `configs/env/honcho.common` — Honcho settings (all LLM features routed to the
+  local vLLM, local embeddings, pgvector).
+- `configs/honcho/init.sql` — creates the pgvector extension on first DB boot.
 - `hermes-config.example.yaml` — seed for `hermes-data/config.yaml`.
+- `honcho-env.example` — seed for `honcho-data/.env` (DB password).
 
-Not committed (gitignored): `models/` (weights), `hermes-data/` (secrets + state),
+Not committed (gitignored): `models/` (weights + embedding model cache),
+`hermes-data/` (secrets + state), `honcho-data/` (Postgres data + DB password),
 `projects/` (agent workspace), `configs/caddy/data/` (the CA private keys).
 
 ## Things that bit us, so you don't have to
@@ -161,3 +213,15 @@ Not committed (gitignored): `models/` (weights), `hermes-data/` (secrets + state
 - **vLLM needs internet on first run** to pull the model from HuggingFace. It's on
   the `egress` network for that. The agent (Hermes) is not — it only gets out
   through Squid.
+- **Adding a service to the `stack` net? Update `NO_PROXY` too.** Hermes and
+  Honcho route outbound traffic through Squid, and Squid denies private
+  addresses — so any in-cluster hostname missing from their `NO_PROXY` list is
+  unreachable (calls silently go to the proxy and get refused). This bit us
+  wiring Hermes→Honcho. Also: env changes need `podman compose up -d <svc>`
+  (recreate), not `podman restart`.
+- **The embeddings container OOM-crashed on warmup** until we capped
+  `--max-batch-tokens 4096`. TEI warms up at the model's full 32k context and
+  the attention spike ate all the RAM.
+- **Honcho's first migration hardcodes 1536-dim vectors** regardless of
+  `EMBEDDING_VECTOR_DIMENSIONS`; the resize script in setup step 2 fixes it
+  (safe while the DB is empty).

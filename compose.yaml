@@ -104,10 +104,10 @@ services:
       --enable-auto-tool-choice
       --tool-call-parser qwen3_coder
       --reasoning-parser qwen3
-      --max-model-len 131072
+      --max-model-len 262144
       --max-num-batched-tokens 8192
       --enable-prefix-caching
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.93
       --host 0.0.0.0
       --port 8180
       --dtype auto
@@ -170,8 +170,8 @@ services:
       HTTPS_PROXY: http://squid:3128
       http_proxy: http://squid:3128
       https_proxy: http://squid:3128
-      NO_PROXY: vllm,caddy,hermes,localhost,127.0.0.1,::1,.dns.podman
-      no_proxy: vllm,caddy,hermes,localhost,127.0.0.1,::1,.dns.podman
+      NO_PROXY: vllm,caddy,hermes,honcho,localhost,127.0.0.1,::1,.dns.podman
+      no_proxy: vllm,caddy,hermes,honcho,localhost,127.0.0.1,::1,.dns.podman
     networks:
       - stack
     volumes:
@@ -183,6 +183,113 @@ services:
     expose:
       - "8642"
       - "9119"
+
+  # ── Honcho (self-hosted memory for Hermes) ────────────────────────────────
+  # https://github.com/plastic-labs/honcho — API (:8000) + background deriver
+  # worker + pgvector Postgres + a CPU embeddings server. Hermes talks to it via
+  # its built-in honcho memory plugin (hermes-data/honcho.json, memory.provider:
+  # honcho). Everything is internal-only; all LLM calls go to the local vLLM
+  # (per-feature BASE_URL overrides in configs/env/honcho.common). Secrets (DB
+  # password) live in honcho-data/.env — seed from honcho-env.example.
+
+  honcho-db:
+    image: docker.io/pgvector/pgvector:pg17
+    container_name: honcho-db
+    restart: unless-stopped
+    command: ["postgres", "-c", "max_connections=200"]
+    env_file:
+      - ./honcho-data/.env             # POSTGRES_DB/USER/PASSWORD (extra vars harmless)
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+    networks:
+      - stack
+    expose:
+      - "5432"
+    volumes:
+      - ./honcho-data/db:/var/lib/postgresql/data:Z
+      - ./configs/honcho/init.sql:/docker-entrypoint-initdb.d/init.sql:ro,Z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U honcho -d honcho"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # OpenAI-compatible /v1/embeddings for Honcho (both GPUs are fully committed
+  # to vLLM, so embeddings run on CPU). Dual-homed on `egress` like vllm for the
+  # one-time HF model download; weights cached in ./models/tei.
+  honcho-embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+    container_name: honcho-embeddings
+    restart: unless-stopped
+    # max-batch-tokens 4096: also caps the warmup sequence — at this model's
+    # native 32k context the warmup attention spike OOM-killed the container.
+    command: ["--model-id", "Qwen/Qwen3-Embedding-0.6B", "--auto-truncate", "--max-batch-tokens", "4096"]
+    networks:
+      - stack
+      - egress
+    expose:
+      - "80"
+    volumes:
+      - ./models/tei:/data:Z
+
+  honcho:
+    image: ghcr.io/plastic-labs/honcho:latest
+    container_name: honcho
+    restart: unless-stopped
+    # Prebuilt image has no entrypoint (bare `fastapi run`); the repo's
+    # entrypoint script runs DB migrations first, so invoke it explicitly.
+    entrypoint: ["sh", "docker/entrypoint.sh"]
+    depends_on:
+      honcho-db:
+        condition: service_healthy
+    env_file:
+      - ./configs/env/honcho.common    # model routing → vllm, embeddings, feature flags
+      - ./honcho-data/.env             # DB_CONNECTION_URI (holds the password)
+    environment:
+      # Internal-only net: outbound (e.g. tiktoken's one-time BPE download) goes
+      # via squid; NO_PROXY keeps intra-stack traffic (vllm, embeddings, its own
+      # webhooks) off the proxy.
+      HTTP_PROXY: http://squid:3128
+      HTTPS_PROXY: http://squid:3128
+      http_proxy: http://squid:3128
+      https_proxy: http://squid:3128
+      NO_PROXY: vllm,honcho,honcho-db,honcho-embeddings,localhost,127.0.0.1,::1,.dns.podman
+      no_proxy: vllm,honcho,honcho-db,honcho-embeddings,localhost,127.0.0.1,::1,.dns.podman
+    networks:
+      - stack
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # Background worker: builds peer representations, summaries, peer cards,
+  # dreams. Same image/env as the API, different entrypoint.
+  honcho-deriver:
+    image: ghcr.io/plastic-labs/honcho:latest
+    container_name: honcho-deriver
+    restart: unless-stopped
+    entrypoint: ["/app/.venv/bin/python", "-m", "src.deriver"]
+    depends_on:
+      honcho:
+        condition: service_healthy     # api runs migrations; deriver must start after
+      honcho-db:
+        condition: service_healthy
+    env_file:
+      - ./configs/env/honcho.common
+      - ./honcho-data/.env
+    environment:
+      HTTP_PROXY: http://squid:3128
+      HTTPS_PROXY: http://squid:3128
+      http_proxy: http://squid:3128
+      https_proxy: http://squid:3128
+      NO_PROXY: vllm,honcho,honcho-db,honcho-embeddings,localhost,127.0.0.1,::1,.dns.podman
+      no_proxy: vllm,honcho,honcho-db,honcho-embeddings,localhost,127.0.0.1,::1,.dns.podman
+    networks:
+      - stack
 
   # Egress proxy: the only path from the internal `stack` net to the internet.
   # Allows public HTTP/HTTPS, denies all private ranges (see configs/squid/squid.conf).
