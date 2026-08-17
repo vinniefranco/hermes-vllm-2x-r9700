@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically sync the multica CLI copy used by agent sandboxes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

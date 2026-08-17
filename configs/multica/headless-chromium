@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Persistent headless Chromium with a CDP port for the Hermes browser-use
+# harness (browser.cdp_url in ~/.hermes/config.yaml). Uses the Playwright
+# Chromium bundle; the glob survives playwright version bumps.
+set -euo pipefail
+
+CHROME=$(ls -td "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux*/chrome 2>/dev/null | head -1)
+if [[ -z "$CHROME" ]]; then
+    echo "headless-chromium: no Playwright chromium found under ~/.cache/ms-playwright" >&2
+    exit 1
+fi
+
+exec "$CHROME" \
+    --headless=new \
+    --remote-debugging-port=9222 \
+    --user-data-dir="$HOME/.local/share/headless-chromium" \
+    --no-first-run \
+    --no-default-browser-check \
+    --disable-background-networking \
+    about:blank

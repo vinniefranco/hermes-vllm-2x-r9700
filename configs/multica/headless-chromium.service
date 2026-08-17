@@ -1,0 +1,12 @@
+[Unit]
+Description=Headless Chromium with CDP port 9222 for Hermes browser-use harness
+
+[Service]
+ExecStart=%h/.local/bin/headless-chromium
+Restart=on-failure
+RestartSec=5
+# Chromium can balloon; keep it from squeezing vLLM on this 30G host.
+MemoryMax=2G
+
+[Install]
+WantedBy=default.target

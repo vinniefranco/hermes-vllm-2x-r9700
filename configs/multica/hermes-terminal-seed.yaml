@@ -1,0 +1,48 @@
+terminal:
+  docker_image: docker.io/nikolaik/python-nodejs:python3.11-nodejs20
+  backend: docker
+  # Multica task plumbing: the daemon injects these into the Hermes process;
+  # the docker sandbox doesn't inherit host env, so forward what the multica
+  # CLI needs (MULTICA_TOKEN auth + task identity).
+  docker_forward_env:
+    - MULTICA_DAEMON_PORT
+    - MULTICA_TOKEN
+    - MULTICA_TASK_ID
+    - MULTICA_AGENT_ID
+    - MULTICA_AGENT_NAME
+    - MULTICA_TASK_CONFIG_ROOT
+    - MULTICA_TASK_WORKSPACES_ROOT
+  # The daemon is loopback-only (127.0.0.1:port) and unreachable from the
+  # sandbox netns, but the CLI honors MULTICA_SERVER_URL and talks straight
+  # to the API using the task-scoped MULTICA_TOKEN — same URL as the daemon
+  # profile. Without this the CLI errors "No server configured".
+  docker_env:
+    MULTICA_SERVER_URL: https://api.multica.ai
+  # Stable host copy of the CLI (the AppImage's /tmp mount path changes every
+  # launch). Re-copy after a Multica desktop update.
+  docker_volumes:
+    - /home/vinnie/.local/bin/multica:/usr/local/bin/multica:ro
+  # Fedora SELinux denies the sandbox's unlabeled bind mounts (user_home_t):
+  # even root in the container got EACCES on $HOME and /workspace. Hermes
+  # doesn't :z-label its built-in mounts, so disable labeling for these
+  # sandboxes; cap-drop/no-new-privileges isolation still applies.
+  docker_extra_args:
+    - --security-opt
+    - label=disable
+    # Tunnel the container's loopback :19681 to the host's loopback so
+    # daemon-backed commands (multica repo checkout, daemon status) work.
+    # Safe to set: Hermes emits no --network flag when docker_network is true,
+    # and the port is stable (derived from the multica profile hash).
+    - --network
+    - pasta:-T,19681
+  cwd: .
+  timeout: 180
+  home_mode: auto
+  container_cpu: 8
+  container_memory: 8192
+  container_disk: 51200
+  container_persistent: true
+  # Mount the Hermes process cwd (the Multica task workdir) at /workspace
+  # so task outputs land on the host instead of the container overlay.
+  docker_mount_cwd_to_workspace: true
+  lifetime_seconds: 300

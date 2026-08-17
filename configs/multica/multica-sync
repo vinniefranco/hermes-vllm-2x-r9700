@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Keep ~/.local/bin/multica in sync with the CLI bundled in the running
+# Multica desktop AppImage (its /tmp/.mount_* path changes every launch).
+# The copy is bind-mounted into Hermes agent sandboxes; a stale copy means
+# CLI/server version skew. Run by multica-sync.timer (systemd user unit).
+set -euo pipefail
+
+DEST="$HOME/.local/bin/multica"
+
+# Newest mounted AppImage wins if several are mounted.
+SRC=$(ls -t /tmp/.mount_multic*/resources/app.asar.unpacked/resources/bin/multica 2>/dev/null | head -1 || true)
+
+if [[ -z "$SRC" ]]; then
+    # Desktop app not running — nothing to sync against.
+    exit 0
+fi
+
+if [[ -f "$DEST" ]] && cmp -s "$SRC" "$DEST"; then
+    exit 0
+fi
+
+install -m 0755 "$SRC" "$DEST.tmp"
+mv -f "$DEST.tmp" "$DEST"
+echo "multica-sync: updated $DEST from $SRC ($("$DEST" --version 2>/dev/null | head -1))"

@@ -1,0 +1,6 @@
+[Unit]
+Description=Sync multica CLI copy from the mounted Multica desktop AppImage
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/multica-sync
