@@ -1,4 +1,4 @@
-# Seed configuration for Hermes Agent — copy to hermes-data/config.yaml on first
+# Seed configuration for Hermes Agent. Copy to hermes-data/config.yaml on first
 # setup (the real file is gitignored because it holds secrets). Hermes will
 # normalize/extend this on first run (adds _config_version, custom_providers).
 #
@@ -7,7 +7,7 @@
 #   # then set a dashboard password + a session secret (see below)
 
 # Model backend = the local vLLM container. api_key must be a NON-EMPTY dummy
-# (vLLM ignores it); do NOT use "none" — Hermes reads that as "no key" and the
+# (vLLM ignores it); do NOT use "none", because Hermes reads that as "no key" and the
 # desktop app fails credential resolution.
 model:
   provider: custom
@@ -23,19 +23,22 @@ custom_providers:
       - qwen3.8-27b
 
 # Agent shells run on the `workbench` sidecar over SSH, NOT inside the hermes
-# container — so the agent can't read /opt/data (gateway key, auth secrets,
+# container, so the agent can't read /opt/data (gateway key, auth secrets,
 # state). /projects is bind-mounted into both containers; the agent cannot
-# reach the host. Keypair setup (once, before first start):
-#   podman unshare sh -c 'd=hermes-data/workbench-ssh; mkdir -p $d && \
-#     ssh-keygen -t ed25519 -N "" -f $d/id_ed25519 && chown -R 10000:10000 $d'
-#   mkdir -p configs/workbench/ssh/hostkeys
-#   podman unshare cat hermes-data/workbench-ssh/id_ed25519.pub > configs/workbench/ssh/authorized_keys
+# reach the host. Both containers map uid 10000 to your host user
+# (userns keep-id), so plain user-owned files are correct. Port is 2222: with
+# the custom userns, container root can't bind privileged ports.
+# Keypair setup (once, before first start):
+#   mkdir -p hermes-data/workbench-ssh configs/workbench/ssh/hostkeys
+#   ssh-keygen -t ed25519 -N "" -f hermes-data/workbench-ssh/id_ed25519
+#   chmod 700 hermes-data/workbench-ssh && chmod 400 hermes-data/workbench-ssh/id_ed25519
+#   cp hermes-data/workbench-ssh/id_ed25519.pub configs/workbench/ssh/authorized_keys
 terminal:
   backend: ssh
   cwd: /projects
   ssh_host: workbench
   ssh_user: agent
-  ssh_port: 22
+  ssh_port: 2222
   # NB: the config key this image reads is `ssh_key` (bridged to TERMINAL_SSH_KEY);
   # the upstream docs show `ssh_key_path`, which this image does NOT recognize.
   # Re-check on image upgrades.
@@ -52,7 +55,7 @@ tool_loop_guardrails:
 # Dashboard / desktop-app login. FILL THESE IN before use:
 #   password_hash: podman run --rm --entrypoint python nousresearch/hermes-agent \
 #                    -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('YOUR-PASSWORD'))"
-#   secret:        openssl rand -hex 32   (REQUIRED — without it, every restart
+#   secret:        openssl rand -hex 32   (REQUIRED: without it, every restart
 #                  invalidates all logins with session_expired)
 dashboard:
   basic_auth:

@@ -7,7 +7,7 @@ API formats so you can point coding tools at it, and the Hermes agent is
 sandboxed so it can write code but can't touch the host or scan the LAN.
 
 Built and running on `studio-lin` (Fedora, rootless podman). If you're setting it
-up somewhere else, read the Requirements and the gotchas at the bottom — a few
+up somewhere else, read the Requirements and the gotchas at the bottom: a few
 host-specific things (GPU arch, group IDs, firewall, DNS) will differ.
 
 ## What's in the box
@@ -15,20 +15,21 @@ host-specific things (GPU arch, group IDs, firewall, DNS) will differ.
 - **vLLM** serving `Qwen/Qwen3.8-27B-FP8`, tensor-parallel across both R9700s.
   The image is built from source (`build/Containerfile`) because gfx1201 (RDNA4)
   needs a recent vLLM + AITER. It serves the OpenAI API (`/v1/chat/completions`,
-  `/v1/models`, …) and the Anthropic API (`/v1/messages`) on the same port.
-- **Hermes agent** — the gateway (OpenAI-compatible API + chat platforms), the web
-  dashboard, and the backend the Hermes Desktop app connects to.
-- **Caddy** — terminates TLS with its own internal CA. Nothing is exposed in
+  `/v1/models`, ...) and the Anthropic API (`/v1/messages`) on the same port.
+- The **Hermes agent** container holds the gateway (OpenAI-compatible API + chat
+  platforms), the web dashboard, and the backend the Hermes Desktop app
+  connects to.
+- **Caddy** terminates TLS with its own internal CA. Nothing is exposed in
   plaintext. It's the only thing published to the network.
-- **Squid** — an egress proxy. The agent is on an internal-only network and reaches
-  the internet through Squid, which blocks all private/LAN addresses. So the agent
-  can pip/git/curl the internet but can't reach anything on your LAN.
-- **Honcho** — self-hosted long-term memory for the agent
+- **Squid** is an egress proxy. The agent sits on an internal-only network and
+  reaches the internet through Squid, which blocks all private/LAN addresses. So
+  the agent can pip/git/curl the internet but can't reach anything on your LAN.
+- **Honcho** is self-hosted long-term memory for the agent
   ([plastic-labs/honcho](https://github.com/plastic-labs/honcho)): an API server,
   a background "deriver" worker that turns conversations into a user model,
   a pgvector Postgres, and a CPU embeddings server (TEI running
-  `Qwen/Qwen3-Embedding-0.6B` — the GPUs are fully committed to vLLM). All of
-  Honcho's LLM calls route to the local vLLM; nothing goes to a cloud API.
+  `Qwen/Qwen3-Embedding-0.6B`, since the GPUs are fully committed to vLLM). All
+  of Honcho's LLM calls route to the local vLLM; nothing goes to a cloud API.
   Hermes uses it through its built-in `honcho` memory plugin.
 
 ## How traffic flows
@@ -43,7 +44,7 @@ port 443, routed by path:
 The Hermes Desktop app connects separately to `https://<host>:9119` (also Caddy,
 also TLS).
 
-vLLM and Hermes don't publish any ports themselves — only Caddy does. So the only
+vLLM and Hermes don't publish any ports themselves; only Caddy does. So the only
 way to the model is through TLS.
 
 ## Requirements
@@ -65,9 +66,9 @@ way to the model is through TLS.
   ```
 - A DNS entry (or a hosts file line) pointing `llm.home.vincentfranco.com` at the
   host's IP. If you use a different name, change it in `configs/caddy/conf/Caddyfile`.
-- Check the render group ID on your host (`getent group render`) — it's `105` here
-  and is set in `compose.yaml` under the vllm `group_add`. If yours differs, fix it
-  or vLLM can't reach the GPUs.
+- Check the render group ID on your host (`getent group render`). It's `105` here,
+  set in `compose.yaml` under the vllm `group_add`; if yours differs, fix it or
+  vLLM can't reach the GPUs.
 
 ## How to set it up
 
@@ -78,13 +79,16 @@ way to the model is through TLS.
    cp hermes-config.example.yaml hermes-data/config.yaml
    ```
    Then generate the gateway→workbench SSH keypair (agent shells run on the
-   `workbench` sidecar; see the `terminal:` section of the example config):
+   `workbench` sidecar; see the `terminal:` section of the example config).
+   The hermes and workbench services map container uid 10000 to your own user
+   (`userns_mode: keep-id:uid=10000`), so plain files owned by you are what the
+   containers expect:
    ```
-   podman unshare sh -c 'd=hermes-data/workbench-ssh; mkdir -p $d && \
-     ssh-keygen -t ed25519 -N "" -f $d/id_ed25519 && chown -R 10000:10000 $d && \
-     chmod 700 $d && chmod 400 $d/id_ed25519'
-   mkdir -p configs/workbench/ssh/hostkeys
-   podman unshare cat hermes-data/workbench-ssh/id_ed25519.pub > configs/workbench/ssh/authorized_keys
+   mkdir -p hermes-data/workbench-ssh configs/workbench/ssh/hostkeys
+   ssh-keygen -t ed25519 -N "" -f hermes-data/workbench-ssh/id_ed25519
+   chmod 700 hermes-data/workbench-ssh
+   chmod 400 hermes-data/workbench-ssh/id_ed25519
+   cp hermes-data/workbench-ssh/id_ed25519.pub configs/workbench/ssh/authorized_keys
    ```
    - Set a dashboard password hash:
      ```
@@ -129,14 +133,14 @@ way to the model is through TLS.
    podman compose up -d
    ```
    The first start downloads the ~28 GB of weights into `models/`, and Caddy
-   generates its internal CA. Watch it come up with `podman logs -f vllm` — it's
+   generates its internal CA. Watch it come up with `podman logs -f vllm`. It's
    ready when the health check passes and Hermes starts.
 
 5. **Enable the Hermes↔Honcho hookup.** Hermes finds Honcho via
    `hermes-data/honcho.json` (baseUrl `http://honcho:8000`, workspace/peer
    names) and `memory.provider: honcho` in its config:
    ```
-   podman unshare tee hermes-data/honcho.json <<'EOF'
+   tee hermes-data/honcho.json <<'EOF'
    {
      "baseUrl": "http://honcho:8000",
      "environment": "local",
@@ -149,7 +153,7 @@ way to the model is through TLS.
    podman exec hermes hermes config set memory.provider honcho
    podman compose up -d hermes   # recreate so env/config take effect
    ```
-   Check it with `podman exec hermes hermes memory status` — Honcho should show
+   Check it with `podman exec hermes hermes memory status`. Honcho should show
    as the active provider.
 
 6. **Trust the CA on your machines.** Caddy signs with its own CA, so browsers and
@@ -168,43 +172,49 @@ way to the model is through TLS.
 - OpenAI: `OPENAI_BASE_URL=https://llm.home.vincentfranco.com/v1`
 - Anthropic: `ANTHROPIC_BASE_URL=https://llm.home.vincentfranco.com`
 - Model name is `qwen3.8-27b`.
-- vLLM doesn't check the API key, but most clients require one — send any
+- vLLM doesn't check the API key, but most clients require one, so send any
   non-empty string.
 
 **The dashboard**: open `https://llm.home.vincentfranco.com` in a browser and log
 in with the username/password you set.
 
 **The Hermes gateway API** (`/hermes/v1/...`) needs a bearer token. Hermes
-generates one into `hermes-data/.env` as `API_SERVER_KEY` on first run — send it
+generates one into `hermes-data/.env` as `API_SERVER_KEY` on first run. Send it
 as `Authorization: Bearer <key>`.
 
 **The Hermes Desktop app** connects to `https://<host>:9119` in Remote Gateway
-mode. One catch: Electron's Node backend doesn't use the OS cert store, so trusting
-the CA system-wide isn't enough — launch the app with the CA pointed at explicitly:
+mode. One catch: Electron's Node backend doesn't use the OS cert store, so
+trusting the CA system-wide isn't enough. Launch the app with the CA pointed at
+explicitly:
 ```
 NODE_EXTRA_CA_CERTS=/path/to/root.crt hermes desktop
 ```
-Put that in your shell profile or the app's `.desktop` launcher so it sticks. The
-agent runs in containers, not on your machine: the gateway lives in the `hermes`
-container, and every agent shell command is dispatched over SSH to the
-`workbench` sidecar (`terminal.backend: ssh`), whose only shared mount is
-`/projects` (mapping to `./projects` here). So the agent can't see the host,
-and it also can't see the gateway's own secrets/state in `hermes-data/`.
+Put that in your shell profile or the app's `.desktop` launcher so it sticks.
+
+The agent runs in containers, not on your machine: the gateway lives in the
+`hermes` container, and every agent shell command is dispatched over SSH to the
+`workbench` sidecar (`terminal.backend: ssh`, port 2222). The workbench's shared
+mounts are `/projects` (this repo's `./projects`) and the `~/agents/repos`
+artifact hub. The agent can't see the host, and it can't read the gateway's own
+secrets/state in `hermes-data/`. Because of the uid mapping, everything the
+agent writes in those shared dirs lands owned by your own user, so you (and any
+host-side tools) can read and edit agent output directly.
 
 ## Layout
 
-- `compose.yaml` — the whole stack.
-- `build/` — the vLLM image build (Containerfile + patches).
-- `configs/caddy/conf/Caddyfile` — TLS + routing.
-- `configs/squid/squid.conf` — the egress proxy rules (allow internet, deny LAN).
-- `configs/env/`, `configs/fp8/`, `configs/fused_moe/`, `configs/patches/` — vLLM
-  tuning for the R9700 (kernel configs, env, runtime patches). These come from
-  the r9700-serving project and are what makes it fast on this card.
-- `configs/env/honcho.common` — Honcho settings (all LLM features routed to the
-  local vLLM, local embeddings, pgvector).
-- `configs/honcho/init.sql` — creates the pgvector extension on first DB boot.
-- `hermes-config.example.yaml` — seed for `hermes-data/config.yaml`.
-- `honcho-env.example` — seed for `honcho-data/.env` (DB password).
+- `compose.yaml` is the whole stack.
+- `build/` holds the vLLM image build (Containerfile + patches).
+- `configs/caddy/conf/Caddyfile` does TLS + routing.
+- `configs/squid/squid.conf` has the egress proxy rules (allow internet, deny LAN).
+- `configs/env/`, `configs/fp8/`, `configs/fused_moe/`, `configs/patches/` hold
+  the vLLM tuning for the R9700 (kernel configs, env, runtime patches). These
+  come from the r9700-serving project and are what makes it fast on this card.
+- `configs/env/honcho.common` has the Honcho settings (all LLM features routed
+  to the local vLLM, local embeddings, pgvector).
+- `configs/honcho/init.sql` creates the pgvector extension on first DB boot.
+- `configs/multica/` is the host-side Multica/Mika integration (see its own README).
+- `hermes-config.example.yaml` seeds `hermes-data/config.yaml`.
+- `honcho-env.example` seeds `honcho-data/.env` (DB password).
 
 Not committed (gitignored): `models/` (weights + embedding model cache),
 `hermes-data/` (secrets + state), `honcho-data/` (Postgres data + DB password),
@@ -218,16 +228,20 @@ Not committed (gitignored): `models/` (weights + embedding model cache),
 - **No session `secret` = logged out on every restart** with a `session_expired`
   error. Set one (`openssl rand -hex 32`).
 - **Port 443 needs both the sysctl and the firewall change** above. Testing from
-  the host itself is misleading — it goes over loopback and skips the firewall.
+  the host itself is misleading: it goes over loopback and skips the firewall.
   Only a real other machine (or your phone) proves it's reachable.
+- **The custom userns cost sshd its port 22.** With
+  `userns_mode: keep-id:uid=10000`, container root can no longer bind privileged
+  ports on the compose network, so the workbench sshd listens on 2222 (set in
+  `configs/workbench/sshd.conf` and `terminal.ssh_port`).
 - **The dashboard/desktop app rewrites `config.yaml`** (adds `_config_version`, a
   `custom_providers` list). That's normal; it keeps your values.
 - **vLLM needs internet on first run** to pull the model from HuggingFace. It's on
-  the `egress` network for that. The agent (Hermes) is not — it only gets out
+  the `egress` network for that. The agent (Hermes) is not; it only gets out
   through Squid.
 - **Adding a service to the `stack` net? Update `NO_PROXY` too.** Hermes and
   Honcho route outbound traffic through Squid, and Squid denies private
-  addresses — so any in-cluster hostname missing from their `NO_PROXY` list is
+  addresses, so any in-cluster hostname missing from their `NO_PROXY` list is
   unreachable (calls silently go to the proxy and get refused). This bit us
   wiring Hermes→Honcho. Also: env changes need `podman compose up -d <svc>`
   (recreate), not `podman restart`.
@@ -237,3 +251,7 @@ Not committed (gitignored): `models/` (weights + embedding model cache),
 - **Honcho's first migration hardcodes 1536-dim vectors** regardless of
   `EMBEDDING_VECTOR_DIMENSIONS`; the resize script in setup step 2 fixes it
   (safe while the DB is empty).
+- **vLLM writes caches all over `$HOME`**, not just where the cache env vars
+  point: `~/.cache/vllm` (torch-compile and model-info caches) and `~/.aiter`
+  (AITER ignores `AITER_JIT_DIR` for it). The compose file mounts `~/.cache` and
+  `~/.aiter` for this; narrower per-subdir mounts crash-looped the container.
