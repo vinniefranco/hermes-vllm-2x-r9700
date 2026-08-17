@@ -1,0 +1,37 @@
+# Workbench: the Hermes agent's terminal sandbox, reached over SSH.
+#
+# The gateway (terminal.backend: ssh in hermes-data/config.yaml) runs every
+# agent shell command here instead of inside its own container, so a
+# misbehaving/prompt-injected task can no longer read /opt/data (gateway
+# bearer key, dashboard secret, honcho creds, session state). Only /projects
+# is shared between the two containers.
+#
+# Tooling mirrors what the agent had under backend:local in the hermes image
+# (Debian trixie: git, curl, python3, node/npm, uv, ripgrep, gcc/g++, make).
+# Add tools here, not in the hermes image.
+FROM docker.io/library/debian:trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openssh-server \
+        bash ca-certificates curl wget git git-lfs \
+        python3 python3-venv python3-pip \
+        nodejs npm \
+        ripgrep jq sqlite3 \
+        make gcc g++ pkg-config \
+        less file unzip zip procps nano \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv (same as the hermes image ships)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+# uid/gid 10000 matches the hermes gateway user, so ./projects (bind-mounted
+# into both containers) stays consistently owned under the shared userns.
+RUN groupadd -g 10000 agent && \
+    useradd -m -u 10000 -g 10000 -s /bin/bash agent && \
+    mkdir -p /run/sshd /etc/ssh/hostkeys /etc/ssh/authorized_keys
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 22
+ENTRYPOINT ["/entrypoint.sh"]

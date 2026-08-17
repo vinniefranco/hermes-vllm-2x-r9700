@@ -153,6 +153,13 @@ services:
     depends_on:
       vllm:
         condition: service_healthy
+      workbench:
+        condition: service_healthy    # agent shells run there (terminal.backend: ssh)
+    # Per upstream docker guide: browser tools (bundled Playwright/Chromium) need
+    # ~1g shm — podman's 64M default crashes Chromium. Memory cap keeps a runaway
+    # agent/browser from squeezing vLLM on this 30 GB host (docs recommend 2-4G).
+    shm_size: 1g
+    mem_limit: 4g
     environment:
       HERMES_DASHBOARD: "1"
       API_SERVER_ENABLED: "true"   # OpenAI-compatible gateway on :8642 (proxied at https://.../hermes/v1)
@@ -163,26 +170,70 @@ services:
       #
       # Egress control: hermes is on the internal-only `stack` net (no direct
       # outbound), so all internet access goes through the squid proxy, which
-      # denies RFC1918/link-local/CGNAT. The agent's shell + web tools inherit
-      # these. NO_PROXY keeps intra-stack traffic (vLLM model calls) off the proxy
-      # — squid would otherwise deny vllm's 10.x address as "private".
+      # denies RFC1918/link-local/CGNAT. The gateway's web tools inherit these
+      # (agent SHELLS run on the workbench, which applies the same proxy via its
+      # /etc/environment). NO_PROXY keeps intra-stack traffic (vLLM model calls)
+      # off the proxy — squid would otherwise deny vllm's 10.x address as "private".
       HTTP_PROXY: http://squid:3128
       HTTPS_PROXY: http://squid:3128
       http_proxy: http://squid:3128
       https_proxy: http://squid:3128
-      NO_PROXY: vllm,caddy,hermes,honcho,localhost,127.0.0.1,::1,.dns.podman
-      no_proxy: vllm,caddy,hermes,honcho,localhost,127.0.0.1,::1,.dns.podman
+      NO_PROXY: vllm,caddy,hermes,honcho,workbench,localhost,127.0.0.1,::1,.dns.podman
+      no_proxy: vllm,caddy,hermes,honcho,workbench,localhost,127.0.0.1,::1,.dns.podman
     networks:
       - stack
     volumes:
       - ./hermes-data:/opt/data:Z
-      - ./projects:/projects:Z          # agent's sandboxed workspace (owned by hermes uid 10000)
+      # :z (shared label), not :Z — the workbench mounts the same dir. Gateway
+      # file tools and the agent's remote shell see identical /projects paths.
+      - ./projects:/projects:z
     # No published ports: both the gateway (8642) and dashboard (9119) are reached
     # ONLY through Caddy over TLS — gateway at https://…/hermes/v1, dashboard at
     # https://…:9443. Nothing plaintext is exposed to the host/LAN.
     expose:
       - "8642"
       - "9119"
+
+  # ── Workbench: the agent's terminal sandbox ───────────────────────────────
+  # Hermes dispatches every agent shell command here over SSH (terminal.backend:
+  # ssh in hermes-data/config.yaml) instead of running it inside its own
+  # container. That keeps /opt/data (gateway bearer key, dashboard secret,
+  # honcho creds, session state) out of the agent's reach: a prompt-injected
+  # task can only touch /projects and the workbench's own filesystem.
+  # Key-only auth as user `agent` (uid 10000 = same owner as ./projects);
+  # keypair generated at install time into hermes-data/workbench-ssh/ (private
+  # key stays hermes-side), pubkey copied to configs/workbench/ssh/authorized_keys.
+  # Same egress policy as everything else: internal net only, internet via squid.
+  workbench:
+    image: localhost/hermes-workbench:latest
+    build:
+      context: ./build/workbench
+      dockerfile: Containerfile
+    container_name: workbench
+    restart: unless-stopped
+    # Cap agent builds/tests so a runaway compile can't OOM-pressure vLLM.
+    mem_limit: 4g
+    networks:
+      - stack
+    # Reachable only in-cluster (the gateway's SSH client); nothing published.
+    expose:
+      - "22"
+    volumes:
+      - ./projects:/projects:z                                             # shared with hermes (see its mount)
+      # Persistent agent HOME: the gateway rsyncs skills + skill credentials
+      # into ~/.hermes here on first terminal use, and agent-installed deps
+      # (pip/npm/uv caches, venvs) land here too. Without this mount all of it
+      # is wiped every time the workbench container is recreated.
+      - ./workbench-home:/home/agent:Z
+      - ./configs/workbench/ssh/hostkeys:/etc/ssh/hostkeys:Z               # persistent sshd identity across rebuilds
+      - ./configs/workbench/ssh/authorized_keys:/etc/ssh/authorized_keys/agent:ro,Z
+      - ./configs/workbench/sshd.conf:/etc/ssh/sshd_config.d/workbench.conf:ro,Z
+      - ./configs/workbench/environment:/etc/environment:ro,Z              # PAM injects proxy env into SSH sessions
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/22"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
   # ── Honcho (self-hosted memory for Hermes) ────────────────────────────────
   # https://github.com/plastic-labs/honcho — API (:8000) + background deriver

@@ -11,6 +11,9 @@ models/
 # Agent workspace — its coding sandbox, local work product
 projects/
 
+# Agent HOME on the workbench sidecar: synced skills/credentials + installed deps
+workbench-home/
+
 # Hermes runtime state & SECRETS: config.yaml (session secret, password hash),
 # .env (API_SERVER_KEY), auth.json, sessions, memories, logs, sqlite DBs, etc.
 # Recreated on first run. See hermes-config.example.yaml for the seed config.
@@ -25,6 +28,11 @@ honcho-data/
 # run (clients then re-trust the new root.crt).
 configs/caddy/data/
 configs/caddy/config/
+
+# Workbench SSH material: sshd host keys (generated on first start) + the
+# authorized key copied from hermes-data/workbench-ssh (keypair generated at
+# install time; see README). Per-install, not part of the committed setup.
+configs/workbench/ssh/
 
 # Misc
 *.log

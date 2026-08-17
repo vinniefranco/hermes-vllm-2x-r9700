@@ -77,6 +77,15 @@ way to the model is through TLS.
    mkdir -p hermes-data projects
    cp hermes-config.example.yaml hermes-data/config.yaml
    ```
+   Then generate the gateway→workbench SSH keypair (agent shells run on the
+   `workbench` sidecar; see the `terminal:` section of the example config):
+   ```
+   podman unshare sh -c 'd=hermes-data/workbench-ssh; mkdir -p $d && \
+     ssh-keygen -t ed25519 -N "" -f $d/id_ed25519 && chown -R 10000:10000 $d && \
+     chmod 700 $d && chmod 400 $d/id_ed25519'
+   mkdir -p configs/workbench/ssh/hostkeys
+   podman unshare cat hermes-data/workbench-ssh/id_ed25519.pub > configs/workbench/ssh/authorized_keys
+   ```
    - Set a dashboard password hash:
      ```
      podman run --rm --entrypoint python docker.io/nousresearch/hermes-agent:latest \
@@ -176,8 +185,11 @@ the CA system-wide isn't enough — launch the app with the CA pointed at explic
 NODE_EXTRA_CA_CERTS=/path/to/root.crt hermes desktop
 ```
 Put that in your shell profile or the app's `.desktop` launcher so it sticks. The
-agent runs in the container, not on your machine, and its shell is boxed into
-`/projects` (which maps to `./projects` here). It can't see the host.
+agent runs in containers, not on your machine: the gateway lives in the `hermes`
+container, and every agent shell command is dispatched over SSH to the
+`workbench` sidecar (`terminal.backend: ssh`), whose only shared mount is
+`/projects` (mapping to `./projects` here). So the agent can't see the host,
+and it also can't see the gateway's own secrets/state in `hermes-data/`.
 
 ## Layout
 
