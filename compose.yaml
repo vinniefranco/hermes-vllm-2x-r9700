@@ -177,13 +177,13 @@ services:
     mem_limit: 4g
     environment:
       HERMES_DASHBOARD: "1"
-      # The image bakes HERMES_WRITE_SAFE_ROOT=/opt/data, which confines the
-      # agent's file tools to the gateway's own state dir — a dir the workbench
-      # terminal can't even see (the "split-brain" that made the agent spin).
-      # Point it at /projects, the workspace mounted identically in BOTH the
-      # gateway (file tools) and the workbench (shells). /opt/data configs and
-      # secrets stay out of the agent's writable reach.
-      HERMES_WRITE_SAFE_ROOT: /projects
+      # Colon-separated list of dirs the agent's file tools may write.
+      # /projects is the workspace mounted identically in BOTH the gateway
+      # (file tools) and the workbench (shells); /opt/data lets the agent
+      # manage its own profiles/plugins/state (e.g. enabling a plugin for the
+      # pm profile). .env files are hard-denied by basename no matter what the
+      # safe roots say, so the gateway's keys stay out of reach.
+      HERMES_WRITE_SAFE_ROOT: /projects:/opt/data
       API_SERVER_ENABLED: "true"   # OpenAI-compatible gateway on :8642 (proxied at https://.../hermes/v1)
       API_SERVER_HOST: 0.0.0.0
       # Gateway auth: the agent can run terminal commands, so the API must not be
@@ -205,9 +205,12 @@ services:
     networks:
       - stack
     volumes:
-      - ./hermes-data:/opt/data:Z
-      # :z (shared label), not :Z — the workbench mounts the same dir. Gateway
-      # file tools and the agent's remote shell see identical /projects paths.
+      # :z (shared label), not :Z — the workbench mounts the plugins/ subtree
+      # of this same dir (see its volumes), so the label must be shared or each
+      # container's restart would relabel the subtree away from the other.
+      - ./hermes-data:/opt/data:z
+      # :z — the workbench mounts the same dir. Gateway file tools and the
+      # agent's remote shell see identical /projects paths.
       - ./projects:/projects:z
     # No published ports: both the gateway (8642) and dashboard (9119) are reached
     # ONLY through Caddy over TLS — gateway at https://…/hermes/v1, dashboard at
@@ -246,6 +249,11 @@ services:
       - "2222"
     volumes:
       - ./projects:/projects:z                                             # shared with hermes (see its mount)
+      # Plugins only — NOT all of hermes-data. Agent shells get the plugin
+      # CLIs/state at the same /opt/data/plugins path the gateway documents,
+      # while the rest of /opt/data (bearer key, honcho creds, per-profile
+      # .env, session state) stays unmounted and out of shell reach.
+      - ./hermes-data/plugins:/opt/data/plugins:z
       # Shared artifact hub (bare git repos) at the same absolute path as on
       # the host and in Mika sandboxes, so recorded repo paths + SHAs work for
       # every agent. Handoff convention: ~/agents/HANDOFF.md. ACLs on the dir

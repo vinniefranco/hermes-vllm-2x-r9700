@@ -29,6 +29,10 @@ honcho-data/
 configs/caddy/data/
 configs/caddy/config/
 
+# Workbench SSH-session env: carries the Multica API key (PAM-injected into
+# agent shells). Seed from configs/workbench/environment.example.
+configs/workbench/environment
+
 # Workbench SSH material: sshd host keys (generated on first start) + the
 # authorized key copied from hermes-data/workbench-ssh (keypair generated at
 # install time; see README). Per-install, not part of the committed setup.

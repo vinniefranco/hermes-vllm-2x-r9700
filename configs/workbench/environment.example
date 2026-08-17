@@ -1,3 +1,6 @@
+# Seed for configs/workbench/environment (copy this file there; the real file
+# is gitignored because it carries per-install secrets).
+#
 # Mounted at /etc/environment: PAM injects these into every SSH session, which
 # is the only way compose-level env reaches the agent's shells (sshd starts
 # sessions with a clean environment). Same egress policy as the rest of the
@@ -9,3 +12,8 @@ https_proxy=http://squid:3128
 NO_PROXY=vllm,caddy,hermes,honcho,workbench,localhost,127.0.0.1,::1,.dns.podman
 no_proxy=vllm,caddy,hermes,honcho,workbench,localhost,127.0.0.1,::1,.dns.podman
 LANG=C.UTF-8
+
+# Multica board access for the multica-pm plugin CLI (mirror the values from
+# hermes-data/profiles/pm/.env — keep in sync if the key rotates):
+MULTICA_API_KEY=<your multica api key>
+MULTICA_WORKSPACE_SLUG=<your workspace slug>
