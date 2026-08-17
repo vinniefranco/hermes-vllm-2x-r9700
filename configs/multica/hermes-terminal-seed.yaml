@@ -22,6 +22,11 @@ terminal:
   # launch). Re-copy after a Multica desktop update.
   docker_volumes:
     - /home/vinnie/.local/bin/multica:/usr/local/bin/multica:ro
+    # Shared artifact hub: bare git repos at the SAME absolute path on host
+    # and in the sandbox, so recorded repo paths + SHAs are valid for host
+    # agents (claude, ohmypi) and Hermes agents alike. Convention:
+    # ~/agents/HANDOFF.md.
+    - /home/vinnie/agents/repos:/home/vinnie/agents/repos
   # Fedora SELinux denies the sandbox's unlabeled bind mounts (user_home_t):
   # even root in the container got EACCES on $HOME and /workspace. Hermes
   # doesn't :z-label its built-in mounts, so disable labeling for these
@@ -36,7 +41,9 @@ terminal:
     - --network
     - pasta:-T,19681
   cwd: .
-  timeout: 180
+  # 600s: builds/test-suites regularly outrun the 180s default and the agent
+  # burned turns retrying; the sandbox is disposable so a long timeout is cheap.
+  timeout: 600
   home_mode: auto
   container_cpu: 8
   container_memory: 8192

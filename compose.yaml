@@ -61,6 +61,7 @@ services:
       TRITON_CACHE_DIR: /home/vinnie/.cache/triton
       TORCHINDUCTOR_CACHE_DIR: /home/vinnie/.cache/torchinductor
       TILELANG_CACHE_DIR: /home/vinnie/.cache/tilelang
+      VLLM_NO_USAGE_STATS: "1"       # ~/.config is no longer bind-mounted; skip usage-stats writes
       GPU_MAX_HW_QUEUES: "1"         # avoids ~55-63% RDNA4 decode regression
       NCCL_P2P_DISABLE: "1"          # the two cards sit on separate PCIe roots
       VLLM_TUNED_CONFIG_FOLDER: /app/fused_moe_configs
@@ -83,8 +84,14 @@ services:
       - ./configs/patches/protocol.py:/opt/venv/lib/python3.12/site-packages/vllm/entrypoints/openai/chat_completion/protocol.py:ro
       # torch_guard.py: fix aiter double-namespaced op names crashing torch cache clear at exit.
       - ./configs/patches/torch_guard.py:/opt/venv/lib/python3.12/site-packages/aiter/jit/utils/torch_guard.py:ro
-      # Whole home for JIT/kernel caches (AITER, Triton, inductor) — persist across restarts:
-      - /home/vinnie:/home/vinnie
+      # JIT/kernel caches — persist across restarts. ~/.cache (not the whole
+      # home: that exposed documents/keys to an egress-connected container) —
+      # per-subdir mounts were tried and failed: beyond the AITER/Triton/
+      # inductor/tilelang dirs above, vLLM itself writes ~/.cache/vllm
+      # (torch-compile + modelinfo caches) and libs keep adding more.
+      - /home/vinnie/.cache:/home/vinnie/.cache
+      # AITER also writes ~/.aiter directly (ignores AITER_JIT_DIR for this):
+      - /home/vinnie/.aiter:/home/vinnie/.aiter
       - /home/vinnie/.vllm-workspace:/workspace
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8180/health"]
@@ -150,6 +157,11 @@ services:
     container_name: hermes
     restart: unless-stopped
     command: gateway run
+    # rootless podman: map container uid/gid 10000 (the hermes-agent user) to the
+    # host user, so hermes-data/ and projects/ stay owned by vinnie on the host —
+    # no `podman unshare` needed to read agent output, and host agents
+    # (claude/omp) can collaborate on the same files.
+    userns_mode: "keep-id:uid=10000,gid=10000"
     depends_on:
       vllm:
         condition: service_healthy
@@ -162,6 +174,13 @@ services:
     mem_limit: 4g
     environment:
       HERMES_DASHBOARD: "1"
+      # The image bakes HERMES_WRITE_SAFE_ROOT=/opt/data, which confines the
+      # agent's file tools to the gateway's own state dir — a dir the workbench
+      # terminal can't even see (the "split-brain" that made the agent spin).
+      # Point it at /projects, the workspace mounted identically in BOTH the
+      # gateway (file tools) and the workbench (shells). /opt/data configs and
+      # secrets stay out of the agent's writable reach.
+      HERMES_WRITE_SAFE_ROOT: /projects
       API_SERVER_ENABLED: "true"   # OpenAI-compatible gateway on :8642 (proxied at https://.../hermes/v1)
       API_SERVER_HOST: 0.0.0.0
       # Gateway auth: the agent can run terminal commands, so the API must not be
@@ -211,15 +230,24 @@ services:
       dockerfile: Containerfile
     container_name: workbench
     restart: unless-stopped
+    # Same uid mapping as the hermes service: container user `agent` (10000) ==
+    # host vinnie, so /projects, ~/agents/repos and workbench-home are directly
+    # readable/writable by the host user and host agents.
+    userns_mode: "keep-id:uid=10000,gid=10000"
     # Cap agent builds/tests so a runaway compile can't OOM-pressure vLLM.
     mem_limit: 4g
     networks:
       - stack
     # Reachable only in-cluster (the gateway's SSH client); nothing published.
     expose:
-      - "22"
+      - "2222"
     volumes:
       - ./projects:/projects:z                                             # shared with hermes (see its mount)
+      # Shared artifact hub (bare git repos) at the same absolute path as on
+      # the host and in Mika sandboxes, so recorded repo paths + SHAs work for
+      # every agent. Handoff convention: ~/agents/HANDOFF.md. ACLs on the dir
+      # let both host vinnie and the container agent uid write.
+      - /home/vinnie/agents/repos:/home/vinnie/agents/repos:z
       # Persistent agent HOME: the gateway rsyncs skills + skill credentials
       # into ~/.hermes here on first terminal use, and agent-installed deps
       # (pip/npm/uv caches, venvs) land here too. Without this mount all of it
@@ -230,7 +258,7 @@ services:
       - ./configs/workbench/sshd.conf:/etc/ssh/sshd_config.d/workbench.conf:ro,Z
       - ./configs/workbench/environment:/etc/environment:ro,Z              # PAM injects proxy env into SSH sessions
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/22"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/2222"]
       interval: 10s
       timeout: 5s
       retries: 6
