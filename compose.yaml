@@ -67,6 +67,7 @@ services:
       VLLM_TUNED_CONFIG_FOLDER: /app/fused_moe_configs
     volumes:
       - ./models:/models
+      - ./configs/chat-templates:/app/chat-templates:ro
       - ./configs/fused_moe:/app/fused_moe_configs
       # Per-shape FP8 GEMM configs tuned for the R9700, overlaid onto vLLM's config dir:
       - "./configs/fp8/N=2048,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=2048,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
@@ -100,16 +101,18 @@ services:
       retries: 40
       start_period: 900s             # first start downloads weights + JIT-compiles kernels
     # Image entrypoint is `vllm serve`; model is the positional arg.
-    # No --chat-template: use the model's own bundled template. If tool-calling
-    # misbehaves, a known-good fixed template is at ./configs/chat-templates/qwen.jinja
-    # (mount it and add: --chat-template /app/chat-templates/qwen.jinja).
+    # Chat template: froggeric/Qwen-Fixed-Chat-Templates (Qwen3.5/3.6/3.8 fixes:
+    # medium-reasoning default, think-level steering tags, fast mode, empty-think
+    # dedup). Pairs with qwen3_xml parser per that repo's README. The older
+    # known-good template remains at ./configs/chat-templates/qwen.jinja.
     command: >
       Qwen/Qwen3.8-27B-FP8
       --tokenizer Qwen/Qwen3.8-27B-FP8
       --served-model-name qwen3.8-27b
+      --chat-template /app/chat-templates/qwen3.8-fixed.jinja
       --limit-mm-per-prompt '{"image": 99, "audio": 0, "video": 0}'
       --enable-auto-tool-choice
-      --tool-call-parser qwen3_coder
+      --tool-call-parser qwen3_xml
       --reasoning-parser qwen3
       --max-model-len 262144
       --max-num-batched-tokens 8192
