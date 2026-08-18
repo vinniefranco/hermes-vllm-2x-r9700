@@ -212,7 +212,7 @@ host-side tools) can read and edit agent output directly.
 - `configs/env/honcho.common` has the Honcho settings (all LLM features routed
   to the local vLLM, local embeddings, pgvector).
 - `configs/honcho/init.sql` creates the pgvector extension on first DB boot.
-- `configs/multica/` is the host-side Multica/Mika integration (see its own README).
+- `configs/multica/` is the host-side Multica integration (see its own README).
 - `hermes-config.example.yaml` seeds `hermes-data/config.yaml`.
 - `honcho-env.example` seeds `honcho-data/.env` (DB password).
 
@@ -220,20 +220,16 @@ Not committed (gitignored): `models/` (weights + embedding model cache),
 `hermes-data/` (secrets + state), `honcho-data/` (Postgres data + DB password),
 `projects/` (agent workspace), `configs/caddy/data/` (the CA private keys).
 
-## Things that bit us, so you don't have to
+## Gotchas
 
 - **`api_key: none` breaks the desktop app.** Hermes reads the literal "none" as
   "no key" and the app fails credential resolution. Use any real non-empty string
   (the example uses `sk-local-vllm`).
-- **No session `secret` = logged out on every restart** with a `session_expired`
-  error. Set one (`openssl rand -hex 32`).
+- **No session `secret` means you're logged out on every restart** with a
+  `session_expired` error. Set one (`openssl rand -hex 32`).
 - **Port 443 needs both the sysctl and the firewall change** above. Testing from
   the host itself is misleading: it goes over loopback and skips the firewall.
   Only a real other machine (or your phone) proves it's reachable.
-- **The custom userns cost sshd its port 22.** With
-  `userns_mode: keep-id:uid=10000`, container root can no longer bind privileged
-  ports on the compose network, so the workbench sshd listens on 2222 (set in
-  `configs/workbench/sshd.conf` and `terminal.ssh_port`).
 - **The dashboard/desktop app rewrites `config.yaml`** (adds `_config_version`, a
   `custom_providers` list). That's normal; it keeps your values.
 - **vLLM needs internet on first run** to pull the model from HuggingFace. It's on
@@ -242,16 +238,10 @@ Not committed (gitignored): `models/` (weights + embedding model cache),
 - **Adding a service to the `stack` net? Update `NO_PROXY` too.** Hermes and
   Honcho route outbound traffic through Squid, and Squid denies private
   addresses, so any in-cluster hostname missing from their `NO_PROXY` list is
-  unreachable (calls silently go to the proxy and get refused). This bit us
-  wiring Hermes→Honcho. Also: env changes need `podman compose up -d <svc>`
-  (recreate), not `podman restart`.
-- **The embeddings container OOM-crashed on warmup** until we capped
-  `--max-batch-tokens 4096`. TEI warms up at the model's full 32k context and
-  the attention spike ate all the RAM.
-- **Honcho's first migration hardcodes 1536-dim vectors** regardless of
-  `EMBEDDING_VECTOR_DIMENSIONS`; the resize script in setup step 2 fixes it
-  (safe while the DB is empty).
-- **vLLM writes caches all over `$HOME`**, not just where the cache env vars
-  point: `~/.cache/vllm` (torch-compile and model-info caches) and `~/.aiter`
-  (AITER ignores `AITER_JIT_DIR` for it). The compose file mounts `~/.cache` and
-  `~/.aiter` for this; narrower per-subdir mounts crash-looped the container.
+  unreachable (calls silently go to the proxy and get refused). Also: env
+  changes need `podman compose up -d <svc>` (recreate), not `podman restart`.
+- **Don't narrow the vLLM cache mounts.** vLLM writes caches beyond where the
+  cache env vars point: `~/.cache/vllm` (torch-compile and model-info caches)
+  and `~/.aiter` (AITER ignores `AITER_JIT_DIR` for it). The compose file
+  mounts `~/.cache` and `~/.aiter` whole; narrower per-subdir mounts crash-loop
+  the container.

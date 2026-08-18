@@ -1,11 +1,7 @@
-# Seed for Honcho secrets — copy to honcho-data/.env on first setup (the real
-# file is gitignored because it holds the DB password):
-#
-#   mkdir -p honcho-data
-#   cp honcho-env.example honcho-data/.env
-#   # replace REPLACE_ME in BOTH lines with: openssl rand -hex 24
-#
-# Read by honcho-db (POSTGRES_*) and by honcho/honcho-deriver (DB_CONNECTION_URI).
+# Seed for Honcho secrets: copy to honcho-data/.env per the README setup steps
+# and replace REPLACE_ME in BOTH lines with the same `openssl rand -hex 24`.
+# The real file is gitignored because it holds the DB password. Read by
+# honcho-db (POSTGRES_*) and by honcho/honcho-deriver (DB_CONNECTION_URI).
 POSTGRES_DB=honcho
 POSTGRES_USER=honcho
 POSTGRES_PASSWORD=REPLACE_ME

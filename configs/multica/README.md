@@ -1,39 +1,36 @@
-# Multica / Mika host integration
+# Multica host integration
 
-Host-side wiring that lets Mika, the Hermes agent runtime the Multica desktop
-daemon spawns per task (profile `desktop-api.multica.ai`), actually work on this
-box. This is separate from the compose stack in this repo: Mika's Hermes runs on
-the host, launched by the Multica AppImage daemon, with its terminal backend in
-throwaway podman sandboxes.
+Host-side wiring for running Hermes under the Multica desktop daemon on this
+box. This is separate from the compose stack: the Multica AppImage daemon
+launches a Hermes per task on the host (profile `desktop-api.multica.ai`), with
+its terminal backend in throwaway podman sandboxes. In Multica I named that
+agent "Mika"; it's the same Hermes, and the name is just what shows in the app.
 
-## The problems this solves
+## Why the seed config looks the way it does
 
-We hit every one of these in sequence getting Mika from "spins forever" to a
-green end-to-end run:
+`hermes-terminal-seed.yaml` is mostly workarounds for how the sandbox differs
+from the daemon's own environment:
 
-1. `podman run` exited 125. Hermes' default sandbox image is the *short* name
-   `nikolaik/python-nodejs:python3.11-nodejs20`; Fedora lists three
-   unqualified-search registries, podman can't prompt without a TTY, and the
-   Hermes harness swallows stderr. Fix: a registry-qualified `docker_image`
-   plus a pre-pull.
-2. `multica: command not found`. The CLI lives inside the AppImage's ephemeral
-   `/tmp/.mount_*`, and the sandbox doesn't inherit the daemon's env
-   (`MULTICA_TOKEN`, task identity, and so on). Fix: a stable CLI copy at
-   `~/.local/bin/multica`, mounted read-only, plus `docker_forward_env`.
-3. `Permission denied` on the sandbox's own `$HOME` and `/workspace`. SELinux:
-   Hermes doesn't `:z`-label its bind mounts (`user_home_t`). Fix:
-   `--security-opt label=disable` via `docker_extra_args`.
-4. `No server configured`. The daemon is loopback-only, and no per-task
-   `config.json` is ever materialized for container use. The CLI honors
-   `MULTICA_SERVER_URL`, so we inject it via `docker_env`.
-5. `repo checkout` needs the daemon. The pasta tunnel
-   `--network pasta:-T,19681` maps the container's loopback :19681 to the host's.
-6. Task outputs were trapped in the container overlay.
-   `docker_mount_cwd_to_workspace: true` mounts the per-task workdir at
-   `/workspace` instead.
-7. `browser-harness: chrome-not-running`. The Playwright cache was a binary-less
-   stub; there was no browser on the host at all. Fix: `headless-chromium.service`
-   (persistent headless Chrome, CDP on loopback :9222) plus `browser.cdp_url`.
+- `docker_image` is registry-qualified (and pre-pulled at install). With a
+  short name, Fedora's multiple search registries make podman try to prompt,
+  which fails without a TTY and exits 125.
+- The `multica` CLI is mounted read-only from a stable copy in `~/.local/bin`,
+  because the AppImage's own copy lives in an ephemeral `/tmp/.mount_*` path.
+  `docker_forward_env` passes `MULTICA_TOKEN` and the task identity through;
+  the sandbox doesn't inherit the daemon's env.
+- `docker_extra_args` sets `--security-opt label=disable`. Hermes doesn't
+  `:z`-label its bind mounts, so SELinux would deny the sandbox its own `$HOME`
+  and `/workspace`.
+- `docker_env` injects `MULTICA_SERVER_URL`. The daemon never writes a per-task
+  `config.json` the container could read, but the CLI honors the env var.
+- `--network pasta:-T,19681` maps the container's loopback :19681 to the
+  host's, so `repo checkout` can reach the loopback-only daemon.
+- `docker_mount_cwd_to_workspace: true` puts the per-task workdir at
+  `/workspace`, so task outputs land on the host instead of the container
+  overlay.
+- `browser.cdp_url` points at `headless-chromium.service`: persistent headless
+  Chromium with CDP on loopback :9222 (Playwright's cache alone has no browser
+  binary).
 
 ## Files
 

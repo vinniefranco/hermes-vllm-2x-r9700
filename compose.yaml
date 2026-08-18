@@ -2,12 +2,10 @@
 #
 # vLLM service is derived from https://github.com/prcoe1/r9700-serving (used as
 # reference; its qwen3.8-27b profile and tunables are baked in here). Image is
-# built from ./build/Containerfile. Tweakable state lives in host dirs: ./models (HF cache/weights), ./configs (tuned kernel configs,
-# runtime patches, env), ./hermes-data (Hermes config + state). Config changes
-# need only a restart, never a rebuild.
-#
-# First time: podman compose build vllm   (long source build: vLLM 0.27.1 + AITER + flash-attn for gfx1201)
-# Then:       podman compose up -d        (first run downloads ~28 GB of weights into ./models)
+# built from ./build/Containerfile. Tweakable state lives in host dirs:
+# ./models (HF cache/weights), ./configs (tuned kernel configs, runtime
+# patches, env), ./hermes-data (Hermes config + state). Config changes need
+# only a restart, never a rebuild. Setup steps are in the README.
 
 services:
   vllm:
@@ -127,12 +125,8 @@ services:
       --attention-backend ROCM_AITER_UNIFIED_ATTN
       --speculative-config '{"method": "mtp", "num_speculative_tokens": 3, "attention_backend": "ROCM_AITER_UNIFIED_ATTN"}'
 
-  # TLS termination (Caddy internal CA). vLLM's one port serves both API formats
-  # (OpenAI /v1/* and Anthropic /v1/messages — registered on the same server in
-  # vLLM 0.27), so coding harnesses can use either:
-  #   ANTHROPIC_BASE_URL=https://studio-lin   or   OPENAI_BASE_URL=https://studio-lin/v1
-  # Root CA to trust on clients: ./configs/caddy/data/caddy/pki/authorities/local/root.crt
-  # Port 443 requires: sysctl net.ipv4.ip_unprivileged_port_start=443 (rootless podman)
+  # TLS termination. Hostnames + routing live in configs/caddy/conf/Caddyfile;
+  # client trust setup and the port-443 sysctl are in the README.
   caddy:
     image: docker.io/library/caddy:2
     container_name: caddy
@@ -142,11 +136,8 @@ services:
     networks:
       - stack                        # internal-only; internal CA needs no egress, inbound publish still works
     ports:
-      # 443 serves everything by hostname/path: llm.home… -> vLLM API,
-      # /hermes/* -> gateway, root -> dashboard.
-      - "443:443"
-      # 9119 (TLS) -> hermes dashboard backend, for Hermes Desktop's Remote Gateway.
-      - "9119:9119"
+      - "443:443"                    # everything, path-routed (see Caddyfile)
+      - "9119:9119"                  # TLS for Hermes Desktop's Remote Gateway
     volumes:
       # Directory (not file) mount so edits + `podman exec caddy caddy reload
       # --config /etc/caddy/Caddyfile` work live (file mounts pin the old inode
@@ -170,14 +161,13 @@ services:
         condition: service_healthy
       workbench:
         condition: service_healthy    # agent shells run there (terminal.backend: ssh)
-    # Per upstream docker guide: browser tools (bundled Playwright/Chromium) need
-    # ~1g shm — podman's 64M default crashes Chromium. Memory cap keeps a runaway
-    # agent/browser from squeezing vLLM on this 30 GB host (docs recommend 2-4G).
+    # Bundled Chromium needs ~1g shm (podman's 64M default crashes it); the
+    # memory cap keeps a runaway agent/browser from squeezing vLLM on this
+    # 30 GB host.
     shm_size: 1g
     mem_limit: 4g
     environment:
       HERMES_DASHBOARD: "1"
-      # Colon-separated list of dirs the agent's file tools may write.
       # /projects is the workspace mounted identically in BOTH the gateway
       # (file tools) and the workbench (shells); /opt/data lets the agent
       # manage its own profiles/plugins/state (e.g. enabling a plugin for the
@@ -212,9 +202,8 @@ services:
       # :z — the workbench mounts the same dir. Gateway file tools and the
       # agent's remote shell see identical /projects paths.
       - ./projects:/projects:z
-    # No published ports: both the gateway (8642) and dashboard (9119) are reached
-    # ONLY through Caddy over TLS — gateway at https://…/hermes/v1, dashboard at
-    # https://…:9443. Nothing plaintext is exposed to the host/LAN.
+    # No published ports: the gateway (8642) and dashboard (9119) are reached
+    # only through Caddy over TLS. Nothing plaintext is exposed to the host/LAN.
     expose:
       - "8642"
       - "9119"
@@ -275,12 +264,10 @@ services:
       retries: 6
 
   # ── Honcho (self-hosted memory for Hermes) ────────────────────────────────
-  # https://github.com/plastic-labs/honcho — API (:8000) + background deriver
-  # worker + pgvector Postgres + a CPU embeddings server. Hermes talks to it via
-  # its built-in honcho memory plugin (hermes-data/honcho.json, memory.provider:
-  # honcho). Everything is internal-only; all LLM calls go to the local vLLM
-  # (per-feature BASE_URL overrides in configs/env/honcho.common). Secrets (DB
-  # password) live in honcho-data/.env — seed from honcho-env.example.
+  # https://github.com/plastic-labs/honcho — Hermes talks to it via its built-in
+  # honcho memory plugin (hermes-data/honcho.json, memory.provider: honcho).
+  # Internal-only; all LLM calls go to the local vLLM (per-feature BASE_URL
+  # overrides in configs/env/honcho.common). Secrets live in honcho-data/.env.
 
   honcho-db:
     image: docker.io/pgvector/pgvector:pg17
@@ -311,8 +298,8 @@ services:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
     container_name: honcho-embeddings
     restart: unless-stopped
-    # max-batch-tokens 4096: also caps the warmup sequence — at this model's
-    # native 32k context the warmup attention spike OOM-killed the container.
+    # max-batch-tokens 4096 also caps the warmup sequence; at the model's
+    # native 32k context the warmup attention spike OOMs this container.
     command: ["--model-id", "Qwen/Qwen3-Embedding-0.6B", "--auto-truncate", "--max-batch-tokens", "4096"]
     networks:
       - stack
@@ -356,8 +343,7 @@ services:
       retries: 12
       start_period: 30s
 
-  # Background worker: builds peer representations, summaries, peer cards,
-  # dreams. Same image/env as the API, different entrypoint.
+  # Background deriver worker: same image/env as the API, different entrypoint.
   honcho-deriver:
     image: ghcr.io/plastic-labs/honcho:latest
     container_name: honcho-deriver

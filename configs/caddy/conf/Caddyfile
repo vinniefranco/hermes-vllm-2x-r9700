@@ -1,31 +1,17 @@
-# TLS termination for the local AI stack. All certs come from Caddy's internal
-# CA (local_certs). Trust the root once per client machine:
-#   root cert: ./configs/caddy/data/caddy/pki/authorities/local/root.crt
-#   Fedora:    sudo trust anchor root.crt
-#   macOS:     add to Keychain; Node harnesses: NODE_EXTRA_CA_CERTS=/path/to/root.crt
-#
-# Add hostnames/IPs here if you reach this box by other names, then:
+# TLS termination for the stack. The root to trust on clients is
+# ./configs/caddy/data/caddy/pki/authorities/local/root.crt (see README).
+# Reach this box by another name? Add it below, then:
 #   podman exec caddy caddy reload --config /etc/caddy/Caddyfile
 
 {
 	local_certs
 }
 
-# Single site on standard 443, path-routed (host needs
-# net.ipv4.ip_unprivileged_port_start=443 for rootless podman to bind it).
-#
-# vLLM (root — one upstream serves BOTH API formats):
-#   OpenAI:    https://studio-lin/v1/chat/completions, /v1/completions, /v1/models
-#   Anthropic: https://studio-lin/v1/messages, /v1/messages/count_tokens
-# Hermes gateway (also OpenAI-compatible, so it needs its own prefix;
-# /hermes is stripped before proxying):
-#   https://studio-lin/hermes/v1/...
-# One hostname, path-routed (UniFi allows only a single alias for this IP):
-#   /v1/*      -> vLLM API   (OpenAI /v1/chat|completions|models + Anthropic /v1/messages)
-#   /hermes/*  -> Hermes OpenAI-compatible gateway (prefix stripped)
-#   everything else (incl. root) -> Hermes dashboard, served at root so its
-#     root-relative assets resolve. So https://llm.home.vincentfranco.com/ is the
-#     dashboard; the LLM API lives under /v1 and is unaffected.
+# One hostname on 443, path-routed (UniFi allows only a single alias for this IP):
+#   /v1/*     -> vLLM, which serves both the OpenAI and Anthropic API formats
+#   /hermes/* -> Hermes gateway; it's OpenAI-compatible too, so it needs its
+#                own prefix, stripped before proxying
+#   the rest  -> Hermes dashboard, at root so its root-relative assets resolve
 https://llm.home.vincentfranco.com, https://studio-lin, https://studio-lin.local, https://192.168.86.127, https://localhost {
 	log {
 		output stdout
@@ -43,10 +29,8 @@ https://llm.home.vincentfranco.com, https://studio-lin, https://studio-lin.local
 	}
 }
 
-# Hermes Desktop's Remote Gateway connects to the backend on port 9119 (its
-# documented URL form is host:9119). Expose that backend over TLS on :9119 so
-# the desktop app can reach it — enter https://llm.home.vincentfranco.com:9119
-# in the app. (The browser dashboard stays portless at the root above.)
+# Hermes Desktop's Remote Gateway expects host:9119, so the backend gets its
+# own TLS site on that port. The browser dashboard stays portless above.
 https://llm.home.vincentfranco.com:9119, https://studio-lin:9119, https://studio-lin.local:9119, https://192.168.86.127:9119, https://localhost:9119 {
 	reverse_proxy hermes:9119
 }

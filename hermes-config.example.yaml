@@ -1,10 +1,7 @@
-# Seed configuration for Hermes Agent. Copy to hermes-data/config.yaml on first
-# setup (the real file is gitignored because it holds secrets). Hermes will
-# normalize/extend this on first run (adds _config_version, custom_providers).
-#
-#   mkdir -p hermes-data
-#   cp hermes-config.example.yaml hermes-data/config.yaml
-#   # then set a dashboard password + a session secret (see below)
+# Seed configuration for Hermes Agent: copy to hermes-data/config.yaml per the
+# README setup steps. The real file is gitignored because it holds secrets.
+# Hermes normalizes/extends it on first run (adds _config_version,
+# custom_providers).
 
 # Model backend = the local vLLM container. api_key must be a NON-EMPTY dummy
 # (vLLM ignores it); do NOT use "none", because Hermes reads that as "no key" and the
@@ -25,14 +22,9 @@ custom_providers:
 # Agent shells run on the `workbench` sidecar over SSH, NOT inside the hermes
 # container, so the agent can't read /opt/data (gateway key, auth secrets,
 # state). /projects is bind-mounted into both containers; the agent cannot
-# reach the host. Both containers map uid 10000 to your host user
-# (userns keep-id), so plain user-owned files are correct. Port is 2222: with
-# the custom userns, container root can't bind privileged ports.
-# Keypair setup (once, before first start):
-#   mkdir -p hermes-data/workbench-ssh configs/workbench/ssh/hostkeys
-#   ssh-keygen -t ed25519 -N "" -f hermes-data/workbench-ssh/id_ed25519
-#   chmod 700 hermes-data/workbench-ssh && chmod 400 hermes-data/workbench-ssh/id_ed25519
-#   cp hermes-data/workbench-ssh/id_ed25519.pub configs/workbench/ssh/authorized_keys
+# reach the host. Port is 2222: with the keep-id userns, container root can't
+# bind privileged ports. Keypair setup is in the README (gateway holds the
+# private key, workbench the pubkey).
 terminal:
   backend: ssh
   cwd: /projects
@@ -44,19 +36,16 @@ terminal:
   # Re-check on image upgrades.
   ssh_key: /opt/data/workbench-ssh/id_ed25519
 
-# Unattended gateway: hard-stop runaway tool loops instead of only warning
-# (upstream docker-guide recommendation for headless deployments).
+# Unattended gateway: hard-stop runaway tool loops instead of only warning.
 tool_loop_guardrails:
   hard_stop_enabled: true
   hard_stop_after:
     exact_failure: 5
     idempotent_no_progress: 5
 
-# Dashboard / desktop-app login. FILL THESE IN before use:
-#   password_hash: podman run --rm --entrypoint python nousresearch/hermes-agent \
-#                    -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('YOUR-PASSWORD'))"
-#   secret:        openssl rand -hex 32   (REQUIRED: without it, every restart
-#                  invalidates all logins with session_expired)
+# Dashboard / desktop-app login. FILL THESE IN before use; the commands to
+# generate both values are in the README. The secret is required: without it,
+# every restart invalidates all logins with session_expired.
 dashboard:
   basic_auth:
     username: vinnie
