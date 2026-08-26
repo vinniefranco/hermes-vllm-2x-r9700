@@ -13,9 +13,10 @@ host-specific things (GPU arch, group IDs, firewall, DNS) will differ.
 ## What's in the box
 
 - **vLLM** serving `Qwen/Qwen3.8-27B-FP8`, tensor-parallel across both R9700s.
-  The image is built from source (`build/Containerfile`) because gfx1201 (RDNA4)
-  needs a recent vLLM + AITER. It serves the OpenAI API (`/v1/chat/completions`,
-  `/v1/models`, ...) and the Anthropic API (`/v1/messages`) on the same port.
+  The image is [vllm-radiance](https://codeberg.org/StillDeadcode/vllm-radiance),
+  a prebuilt gfx1201-only vLLM with the RDNA4 patches and hand-tuned kernels
+  baked in. It serves the OpenAI API (`/v1/chat/completions`, `/v1/models`,
+  ...) and the Anthropic API (`/v1/messages`) on the same port.
 - The **Hermes agent** container holds the gateway (OpenAI-compatible API + chat
   platforms), the web dashboard, and the backend the Hermes Desktop app
   connects to.
@@ -50,10 +51,10 @@ way to the model is through TLS.
 ## Requirements
 
 - podman + podman-compose, running rootless.
-- Two GPUs vLLM can use. This build targets gfx1201 (R9700). Different card =
-  change `GPU_ARCH` and the ROCm/torch pins in `compose.yaml` under the vllm
-  `build.args`.
-- Enough disk for the weights (~28 GB) plus the build image (~30 GB).
+- Two GPUs vLLM can use. The vllm-radiance image is gfx1201-only (R9700);
+  a different card means a different serving image, not a knob here.
+- Enough disk for the weights (~28 GB) plus the serving image (~4 GB) and its
+  JIT/kernel caches (`radiance-cache/`, ~2 GB).
 - Rootless podman needs to bind port 443, which is privileged. Allow it:
   ```
   echo 'net.ipv4.ip_unprivileged_port_start=443' | sudo tee /etc/sysctl.d/50-unprivileged-ports.conf
@@ -122,21 +123,17 @@ way to the model is through TLS.
      scripts/configure_embeddings.py --yes
    ```
 
-3. **Build the vLLM image.** This is a from-source build and takes a while (order
-   of an hour on a cold cache):
-   ```
-   podman compose build vllm
-   ```
-
-4. **Bring it up.**
+3. **Bring it up.**
    ```
    podman compose up -d
    ```
-   The first start downloads the ~28 GB of weights into `models/`, and Caddy
-   generates its internal CA. Watch it come up with `podman logs -f vllm`. It's
-   ready when the health check passes and Hermes starts.
+   The first start pulls the serving image, downloads the ~28 GB of weights
+   into `models/`, JIT-compiles the AITER kernels into `radiance-cache/`
+   (~10 min; later starts reuse them and take ~90 s), and Caddy generates its
+   internal CA. Watch it come up with `podman logs -f vllm`. It's ready when
+   the health check passes and Hermes starts.
 
-5. **Enable the Hermes↔Honcho hookup.** Hermes finds Honcho via
+4. **Enable the Hermes↔Honcho hookup.** Hermes finds Honcho via
    `hermes-data/honcho.json` (baseUrl `http://honcho:8000`, workspace/peer
    names) and `memory.provider: honcho` in its config:
    ```
@@ -156,7 +153,7 @@ way to the model is through TLS.
    Check it with `podman exec hermes hermes memory status`. Honcho should show
    as the active provider.
 
-6. **Trust the CA on your machines.** Caddy signs with its own CA, so browsers and
+5. **Trust the CA on your machines.** Caddy signs with its own CA, so browsers and
    apps will warn until you trust the root. It's at:
    ```
    configs/caddy/data/caddy/pki/authorities/local/root.crt
@@ -200,15 +197,45 @@ secrets/state in `hermes-data/`. Because of the uid mapping, everything the
 agent writes in those shared dirs lands owned by your own user, so you (and any
 host-side tools) can read and edit agent output directly.
 
+## Switching models
+
+Both cards are fully committed to the default vLLM service, so an alternate
+model replaces it rather than running alongside. `./model` does the swap:
+
+```
+./model list              # default + the profiles you can switch to
+./model status            # which model server is up
+./model use <profile>     # stop vllm, bring up that profile's server
+./model use default       # back to Qwen3.8-27B-FP8 on vLLM
+```
+
+Whatever is up takes the `vllm` network alias, so Caddy's `/v1/*` route and
+every client URL above stay the same; only the model name in requests changes.
+Hermes/Honcho keep pointing at `vllm:8180` too, which means they'll talk to
+whatever you switched to (or fail while nothing is up). Stopped servers stay
+stopped across reboots, so the last choice sticks.
+
+**Adding a profile:** in `compose.yaml`, the vLLM service's host/GPU plumbing
+lives in the `x-vllm-base` anchor. A new vLLM model is a service that merges
+`*vllm-base`, sets `profiles: ["<name>"]`, takes the `vllm` alias on the
+`stack` network, and has its own `command`; there's a template in the
+"Alternate models" comment block. Non-vLLM servers just need the same
+devices/alias/port 8180 and a `/health` endpoint. Then `./model use <name>`
+picks it up; no script changes.
+
 ## Layout
 
 - `compose.yaml` is the whole stack.
-- `build/` holds the vLLM image build (Containerfile + patches).
+- `model` switches which model server is up (see "Switching models").
+- `build/workbench/` builds the agent's SSH sandbox image (the serving image
+  is pulled prebuilt).
+- `bench/run-bench.sh` is the serving benchmark harness (results land in the
+  gitignored `bench/results/`).
 - `configs/caddy/conf/Caddyfile` does TLS + routing.
 - `configs/squid/squid.conf` has the egress proxy rules (allow internet, deny LAN).
-- `configs/env/`, `configs/fp8/`, `configs/fused_moe/`, `configs/patches/` hold
-  the vLLM tuning for the R9700 (kernel configs, env, runtime patches). These
-  come from the r9700-serving project and are what makes it fast on this card.
+- `configs/env/radiance.env` holds the serving env (AITER routing, RADIANCE
+  kernel switches, cache dirs); `configs/patches/protocol.py` is the one
+  runtime patch we overlay (empty-`tools` tolerance for Hermes).
 - `configs/env/honcho.common` has the Honcho settings (all LLM features routed
   to the local vLLM, local embeddings, pgvector).
 - `configs/honcho/init.sql` creates the pgvector extension on first DB boot.
@@ -216,7 +243,7 @@ host-side tools) can read and edit agent output directly.
 - `hermes-config.example.yaml` seeds `hermes-data/config.yaml`.
 - `honcho-env.example` seeds `honcho-data/.env` (DB password).
 
-Not committed (gitignored): `models/` (weights + embedding model cache),
+Not committed (gitignored): `models/` (weights, embedding model cache),
 `hermes-data/` (secrets + state), `honcho-data/` (Postgres data + DB password),
 `projects/` (agent workspace), `configs/caddy/data/` (the CA private keys).
 
@@ -240,8 +267,12 @@ Not committed (gitignored): `models/` (weights + embedding model cache),
   addresses, so any in-cluster hostname missing from their `NO_PROXY` list is
   unreachable (calls silently go to the proxy and get refused). Also: env
   changes need `podman compose up -d <svc>` (recreate), not `podman restart`.
-- **Don't narrow the vLLM cache mounts.** vLLM writes caches beyond where the
-  cache env vars point: `~/.cache/vllm` (torch-compile and model-info caches)
-  and `~/.aiter` (AITER ignores `AITER_JIT_DIR` for it). The compose file
-  mounts `~/.cache` and `~/.aiter` whole; narrower per-subdir mounts crash-loop
-  the container.
+- **Don't add `user:`/`userns_mode:` to the vLLM service.** The radiance image
+  must run as container root: AITER JIT-writes kernels into site-packages at
+  startup, and a non-root user crash-loops with
+  `ModuleNotFoundError: aiter.ops.triton.unified_attention`. Rootless podman
+  maps container root to your own user, so files stay yours either way.
+- **The `protocol.py` overlay is version-locked.** It's a stock-v0.27.1 file
+  plus the empty-`tools` tolerance; when bumping the vllm-radiance image tag,
+  re-verify the shipped file is still stock (diff it) before carrying the
+  overlay forward.

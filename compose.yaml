@@ -1,129 +1,131 @@
 # vLLM (Qwen3.8-27B-FP8, 2x AMD R9700) + Hermes Agent — podman compose
 #
-# vLLM service is derived from https://github.com/prcoe1/r9700-serving (used as
-# reference; its qwen3.8-27b profile and tunables are baked in here). Image is
-# built from ./build/Containerfile. Tweakable state lives in host dirs:
-# ./models (HF cache/weights), ./configs (tuned kernel configs, runtime
-# patches, env), ./hermes-data (Hermes config + state). Config changes need
-# only a restart, never a rebuild. Setup steps are in the README.
+# vLLM service runs the prebuilt vllm-radiance image
+# (https://codeberg.org/StillDeadcode/vllm-radiance): a gfx1201-only vLLM with
+# the RDNA4 patches and tuned kernels baked in. Tweakable state lives in host dirs: ./models (HF cache/weights), ./configs
+# (env, chat templates, one runtime patch), ./radiance-cache (JIT/compile
+# caches), ./hermes-data (Hermes config + state). Config changes need only a
+# restart, never a rebuild. Setup steps are in the README. Alternate models
+# are opt-in profiles; `./model use <name>` swaps them in (see below).
 
+# ── vLLM base: how a model server runs on this host ───────────────────────
+# Everything below is host/GPU plumbing (devices, env, caches, healthcheck).
+# Model-specific bits live in each service's `command`. The default `vllm`
+# service merges this anchor; to serve another model, add a service under
+# `profiles:` that merges it too (see the "Alternate models" section further
+# down and README "Switching models").
+x-vllm-base: &vllm-base
+  image: docker.io/stilldeadcode/vllm-radiance:0.9.3
+  restart: unless-stopped
+  # Runs as container root (no user:/userns_mode): AITER JIT-writes kernels
+  # into site-packages at startup; a non-root user crash-loops with
+  # `ModuleNotFoundError: aiter.ops.triton.unified_attention`. Rootless podman
+  # maps container root to the host user, so ./models and ./radiance-cache
+  # stay owned by the host user.
+  devices:
+    - /dev/kfd:/dev/kfd
+    - /dev/dri:/dev/dri
+  group_add:
+    - "video"
+    - "105"                        # host render group gid (getent group render)
+  cap_add:
+    - SYS_PTRACE
+    - SYS_NICE                     # radiance: scheduling for its P2P all-reduce; also enables --numa-bind
+  security_opt:
+    - label=disable                # SELinux: required for /dev/kfd + /dev/dri
+    - seccomp=unconfined           # per upstream run instructions
+  ipc: host                        # podman-compose ignores this (leaves 62MiB shm), hence shm_size below
+  shm_size: 16g                    # vLLM TP=2 IPC message queues; matches vLLM's documented default (a cap on tmpfs, not a RAM reservation)
+  networks:
+    - stack                        # intra-stack: caddy proxies to vllm:8180 here
+    - egress                       # outbound internet for HuggingFace pulls/updates (trusted server)
+  # No published port: vLLM is reachable ONLY in-cluster (caddy proxies to
+  # vllm:8180). All external access is TLS via Caddy :443; egress is outbound-only.
+  expose:
+    - "8180"
+  env_file:
+    - ./configs/env/radiance.env   # AITER routing + RADIANCE switches + cache dirs
+  environment:
+    HF_HOME: /models               # weights + tokenizer land in ./models; model arg resolves from this cache
+    VLLM_NO_USAGE_STATS: "1"
+  volumes:
+    - ./models:/models
+    - ./configs/chat-templates:/app/chat-templates:ro
+    # JIT/compile caches (dirs set in radiance.env) — persist across restarts
+    # so warm starts skip the ~10 min JIT:
+    - ./radiance-cache:/cache
+    # Runtime patch overlay (version-locked to the image's vLLM v0.27.1;
+    # re-verify the shipped file is still stock on image bumps). protocol.py:
+    # tolerate `tools: []` + `tool_choice: "none"` from some clients (Hermes
+    # sends this; upstream 400s on it).
+    - ./configs/patches/protocol.py:/opt/vllm/lib/python3.12/site-packages/vllm/entrypoints/openai/chat_completion/protocol.py:ro
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:8180/health"]
+    interval: 30s
+    timeout: 5s
+    retries: 40
+    start_period: 900s             # first start downloads weights + JIT-compiles kernels
 services:
+  # Default model: Qwen3.8-27B-FP8 on both cards. This is what Hermes/Honcho
+  # use and what Caddy proxies as `vllm:8180`. Always on.
   vllm:
-    image: localhost/vllm-fullbuild:latest
-    build:
-      context: ./build
-      dockerfile: Containerfile
-      args:
-        ROCM_IMAGE: docker.io/rocm/dev-ubuntu-24.04:7.14.0-full
-        GPU_ARCH: gfx1201
-        MAX_JOBS: "8"                # host has 30 GB RAM; repo default 16 risks compile OOM
-        TORCH_VERSION: 2.13.0+rocm7.14.0
-        TORCHVISION_VERSION: 0.28.0+rocm7.14.0
-        VLLM_REF: v0.27.1
-        VLLM_VERSION: 0.27.1
-        AITER_REF: v0.1.19.post2
-        FLASH_ATTN_REF: 1cc7ff67cbc5685046c75183e8defecca3e35d5c
+    <<: *vllm-base
     container_name: vllm
-    restart: unless-stopped
-    user: "1000:1000"
-    userns_mode: keep-id             # rootless podman: container uid 1000 == host user, keeps mounts user-owned
-    devices:
-      - /dev/kfd:/dev/kfd
-      - /dev/dri:/dev/dri
-    group_add:
-      - "video"
-      - "105"                        # host render group gid (getent group render)
-    cap_add:
-      - SYS_PTRACE
-    security_opt:
-      - label=disable                # SELinux: required for /dev/kfd + /dev/dri
-    ipc: host                        # podman-compose ignores this (leaves 62MiB shm), hence shm_size below
-    shm_size: 16g                    # vLLM TP=2 IPC message queues; matches vLLM's documented default (a cap on tmpfs, not a RAM reservation)
-    networks:
-      - stack                        # intra-stack: caddy proxies to vllm:8180 here
-      - egress                       # outbound internet for HuggingFace pulls/updates (trusted server)
-    # No published port: vLLM is reachable ONLY in-cluster (caddy proxies to
-    # vllm:8180). All external access is TLS via Caddy :443; egress is outbound-only.
-    expose:
-      - "8180"
-    env_file:
-      - ./configs/env/2xr9700.vllm.common        # HIP/HSA/NCCL tuning for 2x R9700
-      - ./configs/env/aiter-unified-attention.env # AITER unified attention only; other AITER paths JIT-freeze on RDNA4
-    environment:
-      HOME: /home/vinnie
-      HF_HOME: /models               # weights + tokenizer + bundled chat template land in ./models
-      # JIT/kernel caches under the bind-mounted $HOME so they persist and stay user-owned.
-      # AITER_JIT_DIR must be set or non-root runs fall back to a dir off sys.path and
-      # the unified-attention backend fails to import.
-      AITER_JIT_DIR: /home/vinnie/.cache/aiter/jit
-      TRITON_CACHE_DIR: /home/vinnie/.cache/triton
-      TORCHINDUCTOR_CACHE_DIR: /home/vinnie/.cache/torchinductor
-      TILELANG_CACHE_DIR: /home/vinnie/.cache/tilelang
-      VLLM_NO_USAGE_STATS: "1"       # ~/.config is no longer bind-mounted; skip usage-stats writes
-      GPU_MAX_HW_QUEUES: "1"         # avoids ~55-63% RDNA4 decode regression
-      NCCL_P2P_DISABLE: "1"          # the two cards sit on separate PCIe roots
-      VLLM_TUNED_CONFIG_FOLDER: /app/fused_moe_configs
-    volumes:
-      - ./models:/models
-      - ./configs/chat-templates:/app/chat-templates:ro
-      - ./configs/fused_moe:/app/fused_moe_configs
-      # Per-shape FP8 GEMM configs tuned for the R9700, overlaid onto vLLM's config dir:
-      - "./configs/fp8/N=2048,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=2048,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
-      - "./configs/fp8/N=2048,K=256,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=2048,K=256,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
-      - "./configs/fp8/N=4608,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=4608,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
-      - "./configs/fp8/N=512,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=512,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
-      - "./configs/fp8/N=6144,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=6144,K=2048,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
-      - "./configs/fp8/N=17408,K=5120,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=17408,K=5120,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
-      - "./configs/fp8/N=5120,K=3072,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=5120,K=3072,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
-      - "./configs/fp8/N=5120,K=8704,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=5120,K=8704,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
-      - "./configs/fp8/N=7168,K=5120,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=7168,K=5120,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
-      - "./configs/fp8/N=8192,K=5120,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/configs/N=8192,K=5120,device_name=AMD_Radeon_R9700,dtype=fp8_w8a8,block_shape=[128,128].json:ro"
-      # Runtime patch overlays (version-locked: vLLM v0.27.1 / AITER v0.1.19.post2 — refresh on upgrade):
-      # protocol.py: tolerate `tools: []` + `tool_choice: "none"` from some clients.
-      - ./configs/patches/protocol.py:/opt/venv/lib/python3.12/site-packages/vllm/entrypoints/openai/chat_completion/protocol.py:ro
-      # torch_guard.py: fix aiter double-namespaced op names crashing torch cache clear at exit.
-      - ./configs/patches/torch_guard.py:/opt/venv/lib/python3.12/site-packages/aiter/jit/utils/torch_guard.py:ro
-      # JIT/kernel caches — persist across restarts. ~/.cache (not the whole
-      # home: that exposed documents/keys to an egress-connected container) —
-      # per-subdir mounts were tried and failed: beyond the AITER/Triton/
-      # inductor/tilelang dirs above, vLLM itself writes ~/.cache/vllm
-      # (torch-compile + modelinfo caches) and libs keep adding more.
-      - /home/vinnie/.cache:/home/vinnie/.cache
-      # AITER also writes ~/.aiter directly (ignores AITER_JIT_DIR for this):
-      - /home/vinnie/.aiter:/home/vinnie/.aiter
-      - /home/vinnie/.vllm-workspace:/workspace
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8180/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 40
-      start_period: 900s             # first start downloads weights + JIT-compiles kernels
-    # Image entrypoint is `vllm serve`; model is the positional arg.
+    # Image entrypoint wraps `vllm serve`; model is the positional arg.
     # Chat template: froggeric/Qwen-Fixed-Chat-Templates (Qwen3.5/3.6/3.8 fixes:
     # medium-reasoning default, think-level steering tags, fast mode, empty-think
     # dedup). Pairs with qwen3_xml parser per that repo's README. The older
     # known-good template remains at ./configs/chat-templates/qwen.jinja.
+    #
+    # Serving knobs per upstream's recommendations: kv fp8 (halves KV
+    # bandwidth, doubles KV capacity; use bf16 if output quality ever looks
+    # off), MTP depth 8 under the dynamic-draft controller (see radiance.env),
+    # and --no-async-scheduling, which disable_padded_drafter_batch requires.
     command: >
       Qwen/Qwen3.8-27B-FP8
-      --tokenizer Qwen/Qwen3.8-27B-FP8
       --served-model-name qwen3.8-27b
       --chat-template /app/chat-templates/qwen3.8-fixed.jinja
       --limit-mm-per-prompt '{"image": 99, "audio": 0, "video": 0}'
       --enable-auto-tool-choice
       --tool-call-parser qwen3_xml
       --reasoning-parser qwen3
+      --quantization fp8
+      --kv-cache-dtype fp8
       --max-model-len 262144
       --max-num-batched-tokens 8192
       --enable-prefix-caching
-      --gpu-memory-utilization 0.93
-      --host 0.0.0.0
-      --port 8180
-      --dtype auto
+      --mamba-cache-mode align
+      --gpu-memory-utilization 0.92
       --max-num-seqs 4
-      --kv-cache-dtype bfloat16
       -tp 2
       --attention-backend ROCM_AITER_UNIFIED_ATTN
-      --speculative-config '{"method": "mtp", "num_speculative_tokens": 3, "attention_backend": "ROCM_AITER_UNIFIED_ATTN"}'
+      --speculative-config '{"method": "mtp", "num_speculative_tokens": 8, "attention_backend": "ROCM_AITER_UNIFIED_ATTN", "disable_padded_drafter_batch": true}'
+      --no-async-scheduling
+      --host 0.0.0.0
+      --port 8180
+
+  # ── Alternate models (opt-in profiles) ────────────────────────────────────
+  # Both cards are fully committed to the default `vllm` service, so an
+  # alternate model REPLACES it rather than running beside it: stop `vllm`,
+  # bring the alternate up, and vice versa. `./model use <name>` does exactly
+  # that (`./model use default` goes back). Each alternate takes the network
+  # alias `vllm` on the stack net, so Caddy's `/v1/*` route (and anything else
+  # pointed at vllm:8180) keeps working without edits.
+  #
+  # To add another vLLM model: copy this shape, merge *vllm-base, set
+  # `profiles`, `container_name`, the alias, and your own `command`:
+  #
+  #   vllm-foo:
+  #     <<: *vllm-base
+  #     container_name: vllm-foo
+  #     profiles: ["foo"]
+  #     networks:
+  #       stack: { aliases: [vllm] }
+  #       egress: {}
+  #     command: >
+  #       org/Model --served-model-name foo --host 0.0.0.0 --port 8180 -tp 2 ...
+  #
+  # then `./model use foo`.
 
   # TLS termination. Hostnames + routing live in configs/caddy/conf/Caddyfile;
   # client trust setup and the port-443 sysctl are in the README.
@@ -192,6 +194,14 @@ services:
       https_proxy: http://squid:3128
       NO_PROXY: vllm,caddy,hermes,honcho,workbench,localhost,127.0.0.1,::1,.dns.podman
       no_proxy: vllm,caddy,hermes,honcho,workbench,localhost,127.0.0.1,::1,.dns.podman
+      # The dashboard's file/download API otherwise locks to /opt/data (this
+      # container's HERMES_HOME), 403ing artifact opens under /projects and
+      # /home/agent. This is upstream's only knob and takes a single root, so
+      # / it is: the basic-auth'd dashboard can then read/write anything the
+      # hermes uid can touch in this container (sensitive-basename guard still
+      # applies). ~/… artifact rows still 404 (gateway expands ~ to /opt/data);
+      # use their /home/agent/… twins.
+      HERMES_DASHBOARD_FILES_ROOT: /
     networks:
       - stack
     volumes:
@@ -202,6 +212,11 @@ services:
       # :z — the workbench mounts the same dir. Gateway file tools and the
       # agent's remote shell see identical /projects paths.
       - ./projects:/projects:z
+      # Read-only view of the agent's workbench home so the dashboard/desktop
+      # can serve /home/agent/… files the agent wrote via its shell (artifact
+      # opens, image previews). :z shared with the workbench's rw mount of the
+      # same dir.
+      - ./workbench-home:/home/agent:ro,z
     # No published ports: the gateway (8642) and dashboard (9119) are reached
     # only through Caddy over TLS. Nothing plaintext is exposed to the host/LAN.
     expose:
@@ -252,7 +267,9 @@ services:
       # into ~/.hermes here on first terminal use, and agent-installed deps
       # (pip/npm/uv caches, venvs) land here too. Without this mount all of it
       # is wiped every time the workbench container is recreated.
-      - ./workbench-home:/home/agent:Z
+      # :z (shared label, was :Z) — the hermes service now mounts this same
+      # dir read-only at /home/agent for dashboard file serving.
+      - ./workbench-home:/home/agent:z
       - ./configs/workbench/ssh/hostkeys:/etc/ssh/hostkeys:Z               # persistent sshd identity across rebuilds
       - ./configs/workbench/ssh/authorized_keys:/etc/ssh/authorized_keys/agent:ro,Z
       - ./configs/workbench/sshd.conf:/etc/ssh/sshd_config.d/workbench.conf:ro,Z

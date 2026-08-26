@@ -1,12 +1,19 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Local / generated / secret state — NOT committed.
-# Everything else (compose.yaml, build/, configs/{caddy/conf,squid,env,fp8,
-# fused_moe,patches,chat-templates}) IS the setup and should be committed so the
+# Everything else (compose.yaml, build/workbench, configs/{caddy/conf,squid,
+# env,patches,chat-templates}) IS the setup and should be committed so the
 # stack can be spun up with `podman compose up -d` on a fresh checkout.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Model weights / HuggingFace cache (~28 GB) — re-downloaded on first run
 models/
+
+# vllm-radiance JIT/compile caches (AITER kernels, triton, inductor) —
+# regenerated on first start (~10 min); mounted at /cache in the vllm service
+radiance-cache/
+
+# Benchmark results (the harness script bench/run-bench.sh IS committed)
+bench/results/
 
 # Agent workspace — its coding sandbox, local work product
 projects/
