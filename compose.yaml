@@ -92,14 +92,14 @@ services:
       --quantization fp8
       --kv-cache-dtype fp8
       --max-model-len 262144
-      --max-num-batched-tokens 8192
+      --max-num-batched-tokens 16384
       --enable-prefix-caching
       --mamba-cache-mode align
-      --gpu-memory-utilization 0.92
+      --gpu-memory-utilization 0.93
       --max-num-seqs 4
       -tp 2
       --attention-backend ROCM_AITER_UNIFIED_ATTN
-      --speculative-config '{"method": "mtp", "num_speculative_tokens": 8, "attention_backend": "ROCM_AITER_UNIFIED_ATTN", "disable_padded_drafter_batch": true}'
+      --speculative-config '{"method": "mtp", "num_speculative_tokens": 2, "attention_backend": "ROCM_AITER_UNIFIED_ATTN", "disable_padded_drafter_batch": true}'
       --no-async-scheduling
       --host 0.0.0.0
       --port 8180

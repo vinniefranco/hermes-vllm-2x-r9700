@@ -81,7 +81,7 @@
 {%- set reasoning_instructions = '' %}
 {%- if ns_state.thinking %}
     {%- if ns_state.effort == 'xhigh' %}
-        {%- set reasoning_instructions = 'Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.' %}
+        {%- set reasoning_instructions = 'Reasoning effort is set to xhigh. Please think CAREFULLY but BRIEF, validate key assumptions but keep it BRIEF, and MOVE QUICKLY to the conclusion WITHOUT unnecessary elaboration.' %}
     {%- elif ns_state.effort == 'low' %}
         {%- set reasoning_instructions = 'Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.' %}
     {%- endif %}
