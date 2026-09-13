@@ -1,51 +1,26 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# Local / generated / secret state — NOT committed.
-# Everything else (compose.yaml, build/workbench, configs/{caddy/conf,squid,
-# env,patches,chat-templates}) IS the setup and should be committed so the
-# stack can be spun up with `podman compose up -d` on a fresh checkout.
-# ─────────────────────────────────────────────────────────────────────────────
+# Local, generated, or secret state. Everything else is the setup and is committed.
 
-# Model weights / HuggingFace cache (~28 GB) — re-downloaded on first run
+# weights + HF cache (~28 GB); re-downloaded on first run
 models/
-
-# vllm-radiance JIT/compile caches (AITER kernels, triton, inductor) —
-# regenerated on first start (~10 min); mounted at /cache in the vllm service
+# vllm-radiance JIT/compile caches; regenerated on first start
 radiance-cache/
-
-# Benchmark results (the harness script bench/run-bench.sh IS committed)
+# benchmark results (the harness script is committed)
 bench/results/
-
-# Agent workspace — its coding sandbox, local work product
+# agent workspace
 projects/
-
-# Agent HOME on the workbench sidecar: synced skills/credentials + installed deps
+# agent HOME on the workbench: synced skills + installed deps
 workbench-home/
-
-# Hermes runtime state & SECRETS: config.yaml (session secret, password hash),
-# .env (API_SERVER_KEY), auth.json, sessions, memories, logs, sqlite DBs, etc.
-# Recreated on first run. See hermes-config.example.yaml for the seed config.
+# Hermes state + secrets (seed: hermes-config.example.yaml)
 hermes-data/
-
-# Honcho runtime state & SECRETS: Postgres data dir + .env (DB password).
-# Recreated on first run. See honcho-env.example for the seed env file.
+# Honcho Postgres data + DB password (seed: honcho-env.example)
 honcho-data/
-
-# Caddy runtime data & SECRETS: the internal CA private keys (root.key,
-# intermediate.key) and all issued cert keys. A fresh CA is generated on first
-# run (clients then re-trust the new root.crt).
+# Caddy's internal CA keys + issued certs; regenerated on first run
 configs/caddy/data/
 configs/caddy/config/
-
-# Workbench SSH-session env: carries the Multica API key (PAM-injected into
-# agent shells). Seed from configs/workbench/environment.example.
+# per-install workbench secrets: SSH session env (Multica key), sshd host keys, authorized key
 configs/workbench/environment
-
-# Workbench SSH material: sshd host keys (generated on first start) + the
-# authorized key copied from hermes-data/workbench-ssh (keypair generated at
-# install time; see README). Per-install, not part of the committed setup.
 configs/workbench/ssh/
 
-# Misc
 *.log
 .DS_Store
 scratch/

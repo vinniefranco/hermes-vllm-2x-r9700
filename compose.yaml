@@ -1,12 +1,13 @@
-# vLLM (Qwen3.8-27B-FP8, 2x AMD R9700) + Hermes Agent — podman compose
+# vLLM (Qwen3.8-27B-FP8, 2x AMD R9700) + Hermes Agent: podman compose
 #
 # vLLM service runs the prebuilt vllm-radiance image
 # (https://codeberg.org/StillDeadcode/vllm-radiance): a gfx1201-only vLLM with
-# the RDNA4 patches and tuned kernels baked in. Tweakable state lives in host dirs: ./models (HF cache/weights), ./configs
-# (env, chat templates, one runtime patch), ./radiance-cache (JIT/compile
-# caches), ./hermes-data (Hermes config + state). Config changes need only a
-# restart, never a rebuild. Setup steps are in the README. Alternate models
-# are opt-in profiles; `./model use <name>` swaps them in (see below).
+# the RDNA4 patches and tuned kernels baked in. Tweakable state lives in host
+# dirs: ./models (HF cache/weights), ./configs (env, chat templates, one
+# runtime patch), ./radiance-cache (JIT/compile caches), ./hermes-data (Hermes
+# config + state). Config changes need only a restart, never a rebuild. Setup
+# steps are in the README. Alternate models are opt-in profiles; `./model use
+# <name>` swaps them in (see below).
 
 # ── vLLM base: how a model server runs on this host ───────────────────────
 # Everything below is host/GPU plumbing (devices, env, caches, healthcheck).
@@ -34,13 +35,11 @@ x-vllm-base: &vllm-base
   security_opt:
     - label=disable                # SELinux: required for /dev/kfd + /dev/dri
     - seccomp=unconfined           # per upstream run instructions
-  ipc: host                        # podman-compose ignores this (leaves 62MiB shm), hence shm_size below
-  shm_size: 16g                    # vLLM TP=2 IPC message queues; matches vLLM's documented default (a cap on tmpfs, not a RAM reservation)
+  shm_size: 16g                    # vLLM TP=2 IPC message queues; vLLM's documented default (a tmpfs cap, not a RAM reservation)
   networks:
     - stack                        # intra-stack: caddy proxies to vllm:8180 here
     - egress                       # outbound internet for HuggingFace pulls/updates (trusted server)
-  # No published port: vLLM is reachable ONLY in-cluster (caddy proxies to
-  # vllm:8180). All external access is TLS via Caddy :443; egress is outbound-only.
+  # Not published; Caddy proxies /v1/* here.
   expose:
     - "8180"
   env_file:
@@ -51,8 +50,7 @@ x-vllm-base: &vllm-base
   volumes:
     - ./models:/models
     - ./configs/chat-templates:/app/chat-templates:ro
-    # JIT/compile caches (dirs set in radiance.env) — persist across restarts
-    # so warm starts skip the ~10 min JIT:
+    # JIT/compile caches (dirs set in radiance.env); warm starts skip the ~10 min JIT:
     - ./radiance-cache:/cache
     # Runtime patch overlay (version-locked to the image's vLLM v0.27.1;
     # re-verify the shipped file is still stock on image bumps). protocol.py:
@@ -105,15 +103,10 @@ services:
       --port 8180
 
   # ── Alternate models (opt-in profiles) ────────────────────────────────────
-  # Both cards are fully committed to the default `vllm` service, so an
-  # alternate model REPLACES it rather than running beside it: stop `vllm`,
-  # bring the alternate up, and vice versa. `./model use <name>` does exactly
-  # that (`./model use default` goes back). Each alternate takes the network
-  # alias `vllm` on the stack net, so Caddy's `/v1/*` route (and anything else
-  # pointed at vllm:8180) keeps working without edits.
-  #
-  # To add another vLLM model: copy this shape, merge *vllm-base, set
-  # `profiles`, `container_name`, the alias, and your own `command`:
+  # Both cards are committed to `vllm`, so an alternate model REPLACES it;
+  # `./model use <name>` does the swap (README "Switching models"). Each
+  # alternate takes the `vllm` alias on the stack net so Caddy's /v1/* route
+  # and every client URL keep working. To add one, merge *vllm-base:
   #
   #   vllm-foo:
   #     <<: *vllm-base
@@ -124,8 +117,6 @@ services:
   #       egress: {}
   #     command: >
   #       org/Model --served-model-name foo --host 0.0.0.0 --port 8180 -tp 2 ...
-  #
-  # then `./model use foo`.
 
   # TLS termination. Hostnames + routing live in configs/caddy/conf/Caddyfile;
   # client trust setup and the port-443 sysctl are in the README.
@@ -154,7 +145,7 @@ services:
     restart: unless-stopped
     command: gateway run
     # rootless podman: map container uid/gid 10000 (the hermes-agent user) to the
-    # host user, so hermes-data/ and projects/ stay owned by vinnie on the host —
+    # host user, so hermes-data/ and projects/ stay owned by vinnie on the host:
     # no `podman unshare` needed to read agent output, and host agents
     # (claude/omp) can collaborate on the same files.
     userns_mode: "keep-id:uid=10000,gid=10000"
@@ -170,72 +161,49 @@ services:
     mem_limit: 4g
     environment:
       HERMES_DASHBOARD: "1"
-      # /projects is the workspace mounted identically in BOTH the gateway
-      # (file tools) and the workbench (shells). /opt/data/plugins-dev is the
-      # plugin staging dir: the agent drafts plugins there, but Hermes only
-      # loads plugins/, so nothing runs in-process until you promote it (README
-      # "Agent-authored plugins"). The rest of /opt/data stays write-denied;
-      # memories/skills/cron have their own tools that don't go through the
-      # file-tool write root, so this costs the agent nothing.
+      # File-tool writes: the workspace (same path in the workbench) and the
+      # plugin staging dir (README "Agent-authored plugins"). Memories, skills
+      # and cron have their own tools and don't go through this.
       HERMES_WRITE_SAFE_ROOT: /projects:/opt/data/plugins-dev
       API_SERVER_ENABLED: "true"   # OpenAI-compatible gateway on :8642 (proxied at https://.../hermes/v1)
       API_SERVER_HOST: 0.0.0.0
-      # Gateway auth: the agent can run terminal commands, so the API must not be
-      # open to the LAN. The bearer key lives in hermes-data/.env (API_SERVER_KEY,
-      # auto-generated by Hermes; that file takes precedence over env set here).
+      # Bearer key: API_SERVER_KEY in hermes-data/.env (auto-generated; that
+      # file wins over env set here).
       #
-      # Egress control: hermes is on the internal-only `stack` net (no direct
-      # outbound), so all internet access goes through the squid proxy, which
-      # denies RFC1918/link-local/CGNAT. The gateway's web tools inherit these
-      # (agent SHELLS run on the workbench, which applies the same proxy via its
-      # /etc/environment). NO_PROXY keeps intra-stack traffic (vLLM model calls)
-      # off the proxy — squid would otherwise deny vllm's 10.x address as "private".
+      # `stack` is internal-only, so all internet access goes via squid.
+      # NO_PROXY must list every in-cluster hostname this container talks to,
+      # or squid denies the 10.x address as private (README gotchas).
       HTTP_PROXY: http://squid:3128
       HTTPS_PROXY: http://squid:3128
       http_proxy: http://squid:3128
       https_proxy: http://squid:3128
       NO_PROXY: vllm,caddy,hermes,honcho,workbench,localhost,127.0.0.1,::1,.dns.podman
       no_proxy: vllm,caddy,hermes,honcho,workbench,localhost,127.0.0.1,::1,.dns.podman
-      # The dashboard's file/download API otherwise locks to /opt/data (this
-      # container's HERMES_HOME), 403ing artifact opens under /projects and
-      # /home/agent. This is upstream's only knob and takes a single root, so
-      # / it is: the basic-auth'd dashboard can then read/write anything the
-      # hermes uid can touch in this container (sensitive-basename guard still
-      # applies). ~/… artifact rows still 404 (gateway expands ~ to /opt/data);
-      # use their /home/agent/… twins.
+      # Dashboard file API root. Upstream's only knob and it takes one root;
+      # anything narrower 403s artifact opens under /projects and /home/agent.
+      # ~/… artifact rows still 404 (gateway expands ~ to /opt/data); use
+      # their /home/agent/… twins.
       HERMES_DASHBOARD_FILES_ROOT: /
     networks:
       - stack
     volumes:
-      # :z (shared label), not :Z — the workbench mounts subtrees of this same
-      # dir (see its volumes), so the label must be shared or each container's
-      # restart would relabel the subtrees away from the other.
+      # :z (shared label) on everything the workbench also mounts; :Z would
+      # relabel the dir away from the other container on every restart.
       - ./hermes-data:/opt/data:z
-      # :z — the workbench mounts the same dir. Gateway file tools and the
-      # agent's remote shell see identical /projects paths.
       - ./projects:/projects:z
-      # Read-only view of the agent's workbench home so the dashboard/desktop
-      # can serve /home/agent/… files the agent wrote via its shell (artifact
-      # opens, image previews). :z shared with the workbench's rw mount of the
-      # same dir.
+      # Read-only view of the agent's workbench home so the dashboard can
+      # serve /home/agent/… files the agent wrote via its shell.
       - ./workbench-home:/home/agent:ro,z
-    # No published ports: the gateway (8642) and dashboard (9119) are reached
-    # only through Caddy over TLS. Nothing plaintext is exposed to the host/LAN.
+    # Not published; Caddy proxies both.
     expose:
       - "8642"
       - "9119"
 
   # ── Workbench: the agent's terminal sandbox ───────────────────────────────
-  # Hermes dispatches every agent shell command here over SSH (terminal.backend:
-  # ssh in hermes-data/config.yaml) instead of running it inside its own
-  # container. That keeps /opt/data (gateway bearer key, dashboard secret,
-  # honcho creds, session state) out of the agent's reach: a prompt-injected
-  # task can only touch /projects, the plugin staging dir and the workbench's
-  # own filesystem.
-  # Key-only auth as user `agent` (uid 10000 = same owner as ./projects);
-  # keypair generated at install time into hermes-data/workbench-ssh/ (private
-  # key stays hermes-side), pubkey copied to configs/workbench/ssh/authorized_keys.
-  # Same egress policy as everything else: internal net only, internet via squid.
+  # Every agent shell command runs here over SSH (terminal.backend: ssh), not
+  # in the hermes container, so the gateway's secrets in /opt/data stay out
+  # of shell reach. What's shared and why: README "Using it". Key-only auth
+  # as `agent` (uid 10000); keypair setup is README step 1.
   workbench:
     image: localhost/hermes-workbench:latest
     build:
@@ -243,9 +211,7 @@ services:
       dockerfile: Containerfile
     container_name: workbench
     restart: unless-stopped
-    # Same uid mapping as the hermes service: container user `agent` (10000) ==
-    # host vinnie, so /projects, ~/agents/repos and workbench-home are directly
-    # readable/writable by the host user and host agents.
+    # Same keep-id mapping as hermes: `agent` (10000) == host vinnie.
     userns_mode: "keep-id:uid=10000,gid=10000"
     # Cap agent builds/tests so a runaway compile can't OOM-pressure vLLM.
     mem_limit: 4g
@@ -256,32 +222,20 @@ services:
       - "2222"
     volumes:
       - ./projects:/projects:z                                             # shared with hermes (see its mount)
-      # Slices of the agent's home, NOT all of hermes-data: the rest of
-      # /opt/data (bearer key, honcho creds, .env, session state) stays
-      # unmounted and out of shell reach. plugins/ is :ro because the gateway
-      # imports it into its own process — a shell that could write it could
-      # run code there with every secret in reach. The multica-pm CLI only
-      # reads its own dir, so :ro costs nothing. skills/ and memories/ are
-      # what the agent goes looking for at the /opt/data paths its prompt
-      # names; neither carries secrets.
+      # Slices of the agent's home, not all of hermes-data (secrets stay
+      # unmounted). plugins/ is :ro because the gateway imports it into its
+      # own process; the multica-pm CLI only reads it.
       - ./hermes-data/plugins:/opt/data/plugins:ro,z
       - ./hermes-data/skills:/opt/data/skills:ro,z
       - ./hermes-data/memories:/opt/data/memories:ro,z
-      # Plugin staging: the one writable /opt/data path from the shell (and
-      # from the gateway's file tools; see HERMES_WRITE_SAFE_ROOT). Hermes
-      # never scans it; promote with `cp -r` into plugins/ + restart hermes.
+      # Plugin staging (README "Agent-authored plugins"); Hermes never loads it.
       - ./hermes-data/plugins-dev:/opt/data/plugins-dev:z
-      # Shared artifact hub (bare git repos) at the same absolute path as on
-      # the host and in Mika sandboxes, so recorded repo paths + SHAs work for
-      # every agent. Handoff convention: ~/agents/HANDOFF.md. ACLs on the dir
-      # let both host vinnie and the container agent uid write.
+      # Artifact hub (bare git repos) at the same absolute path as on the host
+      # and in Mika sandboxes, so recorded repo paths + SHAs work everywhere
+      # (convention: ~/agents/HANDOFF.md).
       - /home/vinnie/agents/repos:/home/vinnie/agents/repos:z
-      # Persistent agent HOME: the gateway rsyncs skills + skill credentials
-      # into ~/.hermes here on first terminal use, and agent-installed deps
-      # (pip/npm/uv caches, venvs) land here too. Without this mount all of it
-      # is wiped every time the workbench container is recreated.
-      # :z (shared label, was :Z) — the hermes service now mounts this same
-      # dir read-only at /home/agent for dashboard file serving.
+      # Persistent agent HOME: synced skills, pip/npm/uv caches, venvs. Without
+      # it all of that is wiped on every recreate.
       - ./workbench-home:/home/agent:z
       - ./configs/workbench/ssh/hostkeys:/etc/ssh/hostkeys:Z               # persistent sshd identity across rebuilds
       - ./configs/workbench/ssh/authorized_keys:/etc/ssh/authorized_keys/agent:ro,Z
@@ -294,10 +248,9 @@ services:
       retries: 6
 
   # ── Honcho (self-hosted memory for Hermes) ────────────────────────────────
-  # https://github.com/plastic-labs/honcho — Hermes talks to it via its built-in
-  # honcho memory plugin (hermes-data/honcho.json, memory.provider: honcho).
-  # Internal-only; all LLM calls go to the local vLLM (per-feature BASE_URL
-  # overrides in configs/env/honcho.common). Secrets live in honcho-data/.env.
+  # https://github.com/plastic-labs/honcho, reached via Hermes's built-in
+  # honcho memory plugin (README step 4). All LLM calls go to the local vLLM
+  # (configs/env/honcho.common); secrets in honcho-data/.env.
 
   honcho-db:
     image: docker.io/pgvector/pgvector:pg17
@@ -353,9 +306,7 @@ services:
       - ./configs/env/honcho.common    # model routing → vllm, embeddings, feature flags
       - ./honcho-data/.env             # DB_CONNECTION_URI (holds the password)
     environment:
-      # Internal-only net: outbound (e.g. tiktoken's one-time BPE download) goes
-      # via squid; NO_PROXY keeps intra-stack traffic (vllm, embeddings, its own
-      # webhooks) off the proxy.
+      # Outbound (tiktoken's one-time BPE download) via squid; NO_PROXY as for hermes.
       HTTP_PROXY: http://squid:3128
       HTTPS_PROXY: http://squid:3128
       http_proxy: http://squid:3128

@@ -1,8 +1,8 @@
-# Honcho (api + deriver) — non-secret settings. Secrets (DB password /
+# Honcho (api + deriver): non-secret settings. Secrets (DB password /
 # connection URI) live in ../../honcho-data/.env (gitignored).
 #
 # Every LLM feature is routed to the local vLLM container; the api_key is a
-# dummy (vLLM ignores it) but must be non-empty — the openai transport reads
+# dummy (vLLM ignores it) but must be non-empty; the openai transport reads
 # LLM_OPENAI_API_KEY. Full variable reference:
 # https://github.com/plastic-labs/honcho/blob/main/.env.template
 
@@ -15,7 +15,7 @@ LLM_OPENAI_API_KEY=sk-local-vllm
 DERIVER_MODEL_CONFIG__MODEL=qwen3.8-27b
 DERIVER_MODEL_CONFIG__OVERRIDES__BASE_URL=http://vllm:8180/v1
 # Low-traffic personal stack: process memory work immediately instead of
-# batching up to 30 min — facts become recallable right after a conversation.
+# batching up to 30 min, so facts become recallable right after a conversation.
 DERIVER_FLUSH_ENABLED=true
 
 # ── Summaries ────────────────────────────────────────────────────────────────

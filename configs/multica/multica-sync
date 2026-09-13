@@ -11,7 +11,7 @@ DEST="$HOME/.local/bin/multica"
 SRC=$(ls -t /tmp/.mount_multic*/resources/app.asar.unpacked/resources/bin/multica 2>/dev/null | head -1 || true)
 
 if [[ -z "$SRC" ]]; then
-    # Desktop app not running — nothing to sync against.
+    # Desktop app not running: nothing to sync against.
     exit 0
 fi
 

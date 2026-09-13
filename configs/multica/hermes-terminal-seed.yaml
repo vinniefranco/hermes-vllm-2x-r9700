@@ -14,7 +14,7 @@ terminal:
     - MULTICA_TASK_WORKSPACES_ROOT
   # The daemon is loopback-only (127.0.0.1:port) and unreachable from the
   # sandbox netns, but the CLI honors MULTICA_SERVER_URL and talks straight
-  # to the API using the task-scoped MULTICA_TOKEN — same URL as the daemon
+  # to the API using the task-scoped MULTICA_TOKEN, same URL as the daemon
   # profile. Without this the CLI errors "No server configured".
   docker_env:
     MULTICA_SERVER_URL: https://api.multica.ai

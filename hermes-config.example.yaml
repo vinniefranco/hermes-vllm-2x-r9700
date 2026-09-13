@@ -1,7 +1,5 @@
 # Seed configuration for Hermes Agent: copy to hermes-data/config.yaml per the
 # README setup steps. The real file is gitignored because it holds secrets.
-# Hermes normalizes/extends it on first run (adds _config_version,
-# custom_providers).
 
 # Model backend = the local vLLM container. api_key must be a NON-EMPTY dummy
 # (vLLM ignores it); do NOT use "none", because Hermes reads that as "no key" and the
@@ -19,12 +17,9 @@ custom_providers:
     models:
       - qwen3.8-27b
 
-# Agent shells run on the `workbench` sidecar over SSH, NOT inside the hermes
-# container, so the agent can't read /opt/data (gateway key, auth secrets,
-# state). /projects is bind-mounted into both containers; the agent cannot
-# reach the host. Port is 2222: with the keep-id userns, container root can't
-# bind privileged ports. Keypair setup is in the README (gateway holds the
-# private key, workbench the pubkey).
+# Agent shells run on the `workbench` sidecar over SSH (README "Using it").
+# Port 2222: with the keep-id userns, container root can't bind privileged
+# ports. Keypair setup is README step 1.
 terminal:
   backend: ssh
   cwd: /projects

@@ -14,6 +14,6 @@ no_proxy=vllm,caddy,hermes,honcho,workbench,localhost,127.0.0.1,::1,.dns.podman
 LANG=C.UTF-8
 
 # Multica board access for the multica-pm plugin CLI (mirror the values from
-# hermes-data/profiles/pm/.env — keep in sync if the key rotates):
+# hermes-data/profiles/pm/.env; keep in sync if the key rotates):
 MULTICA_API_KEY=<your multica api key>
 MULTICA_WORKSPACE_SLUG=<your workspace slug>

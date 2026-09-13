@@ -45,9 +45,6 @@ port 443, routed by path:
 The Hermes Desktop app connects separately to `https://<host>:9119` (also Caddy,
 also TLS).
 
-vLLM and Hermes don't publish any ports themselves; only Caddy does. So the only
-way to the model is through TLS.
-
 ## Requirements
 
 - podman + podman-compose, running rootless.
@@ -74,7 +71,8 @@ way to the model is through TLS.
 ## How to set it up
 
 1. **Seed the Hermes config.** The real config lives in `hermes-data/` and is
-   gitignored because it holds secrets. Copy the example and fill in two things:
+   gitignored because it holds secrets. Copy the example, generate the
+   workbench SSH keypair, and fill in the dashboard login:
    ```
    mkdir -p hermes-data projects
    cp hermes-config.example.yaml hermes-data/config.yaml
@@ -230,33 +228,24 @@ Hermes/Honcho keep pointing at `vllm:8180` too, which means they'll talk to
 whatever you switched to (or fail while nothing is up). Stopped servers stay
 stopped across reboots, so the last choice sticks.
 
-**Adding a profile:** in `compose.yaml`, the vLLM service's host/GPU plumbing
-lives in the `x-vllm-base` anchor. A new vLLM model is a service that merges
-`*vllm-base`, sets `profiles: ["<name>"]`, takes the `vllm` alias on the
-`stack` network, and has its own `command`; there's a template in the
-"Alternate models" comment block. Non-vLLM servers just need the same
-devices/alias/port 8180 and a `/health` endpoint. Then `./model use <name>`
-picks it up; no script changes.
+**Adding a profile:** copy the template in the `compose.yaml` "Alternate
+models" comment. Non-vLLM servers just need the same devices, the `vllm`
+alias, port 8180 and a `/health` endpoint. `./model use <name>` picks it up;
+no script changes.
 
 ## Layout
 
-- `compose.yaml` is the whole stack.
-- `model` switches which model server is up (see "Switching models").
-- `build/workbench/` builds the agent's SSH sandbox image (the serving image
-  is pulled prebuilt).
-- `bench/run-bench.sh` is the serving benchmark harness (results land in the
-  gitignored `bench/results/`).
-- `configs/caddy/conf/Caddyfile` does TLS + routing.
-- `configs/squid/squid.conf` has the egress proxy rules (allow internet, deny LAN).
-- `configs/env/radiance.env` holds the serving env (AITER routing, RADIANCE
-  kernel switches, cache dirs); `configs/patches/protocol.py` is the one
-  runtime patch we overlay (empty-`tools` tolerance for Hermes).
-- `configs/env/honcho.common` has the Honcho settings (all LLM features routed
-  to the local vLLM, local embeddings, pgvector).
-- `configs/honcho/init.sql` creates the pgvector extension on first DB boot.
-- `configs/multica/` is the host-side Multica integration (see its own README).
-- `hermes-config.example.yaml` seeds `hermes-data/config.yaml`.
-- `honcho-env.example` seeds `honcho-data/.env` (DB password).
+- `compose.yaml` is the whole stack; `model` switches which model server is up.
+- `build/workbench/` builds the agent's SSH sandbox image.
+- `bench/run-bench.sh` is the serving benchmark harness.
+- `configs/caddy/conf/Caddyfile` does TLS + routing; `configs/squid/squid.conf`
+  is the egress policy.
+- `configs/env/radiance.env` is the serving env; `configs/patches/protocol.py`
+  is the one runtime patch (empty-`tools` tolerance for Hermes).
+- `configs/env/honcho.common` + `configs/honcho/init.sql` configure Honcho.
+- `configs/multica/` is the host-side Multica integration (own README).
+- `hermes-config.example.yaml` and `honcho-env.example` seed the gitignored
+  `hermes-data/config.yaml` and `honcho-data/.env`.
 
 Not committed (gitignored): `models/` (weights, embedding model cache),
 `hermes-data/` (secrets + state), `honcho-data/` (Postgres data + DB password),
@@ -274,9 +263,8 @@ Not committed (gitignored): `models/` (weights, embedding model cache),
   Only a real other machine (or your phone) proves it's reachable.
 - **The dashboard/desktop app rewrites `config.yaml`** (adds `_config_version`, a
   `custom_providers` list). That's normal; it keeps your values.
-- **vLLM needs internet on first run** to pull the model from HuggingFace. It's on
-  the `egress` network for that. The agent (Hermes) is not; it only gets out
-  through Squid.
+- **vLLM needs internet on first run** to pull the model from HuggingFace; it's
+  on the `egress` network for that.
 - **Adding a service to the `stack` net? Update `NO_PROXY` too.** Hermes and
   Honcho route outbound traffic through Squid, and Squid denies private
   addresses, so any in-cluster hostname missing from their `NO_PROXY` list is
