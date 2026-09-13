@@ -171,11 +171,13 @@ services:
     environment:
       HERMES_DASHBOARD: "1"
       # /projects is the workspace mounted identically in BOTH the gateway
-      # (file tools) and the workbench (shells); /opt/data lets the agent
-      # manage its own profiles/plugins/state (e.g. enabling a plugin for the
-      # pm profile). .env files are hard-denied by basename no matter what the
-      # safe roots say, so the gateway's keys stay out of reach.
-      HERMES_WRITE_SAFE_ROOT: /projects:/opt/data
+      # (file tools) and the workbench (shells). /opt/data/plugins-dev is the
+      # plugin staging dir: the agent drafts plugins there, but Hermes only
+      # loads plugins/, so nothing runs in-process until you promote it (README
+      # "Agent-authored plugins"). The rest of /opt/data stays write-denied;
+      # memories/skills/cron have their own tools that don't go through the
+      # file-tool write root, so this costs the agent nothing.
+      HERMES_WRITE_SAFE_ROOT: /projects:/opt/data/plugins-dev
       API_SERVER_ENABLED: "true"   # OpenAI-compatible gateway on :8642 (proxied at https://.../hermes/v1)
       API_SERVER_HOST: 0.0.0.0
       # Gateway auth: the agent can run terminal commands, so the API must not be
@@ -205,9 +207,9 @@ services:
     networks:
       - stack
     volumes:
-      # :z (shared label), not :Z — the workbench mounts the plugins/ subtree
-      # of this same dir (see its volumes), so the label must be shared or each
-      # container's restart would relabel the subtree away from the other.
+      # :z (shared label), not :Z — the workbench mounts subtrees of this same
+      # dir (see its volumes), so the label must be shared or each container's
+      # restart would relabel the subtrees away from the other.
       - ./hermes-data:/opt/data:z
       # :z — the workbench mounts the same dir. Gateway file tools and the
       # agent's remote shell see identical /projects paths.
@@ -228,7 +230,8 @@ services:
   # ssh in hermes-data/config.yaml) instead of running it inside its own
   # container. That keeps /opt/data (gateway bearer key, dashboard secret,
   # honcho creds, session state) out of the agent's reach: a prompt-injected
-  # task can only touch /projects and the workbench's own filesystem.
+  # task can only touch /projects, the plugin staging dir and the workbench's
+  # own filesystem.
   # Key-only auth as user `agent` (uid 10000 = same owner as ./projects);
   # keypair generated at install time into hermes-data/workbench-ssh/ (private
   # key stays hermes-side), pubkey copied to configs/workbench/ssh/authorized_keys.
@@ -253,11 +256,21 @@ services:
       - "2222"
     volumes:
       - ./projects:/projects:z                                             # shared with hermes (see its mount)
-      # Plugins only — NOT all of hermes-data. Agent shells get the plugin
-      # CLIs/state at the same /opt/data/plugins path the gateway documents,
-      # while the rest of /opt/data (bearer key, honcho creds, per-profile
-      # .env, session state) stays unmounted and out of shell reach.
-      - ./hermes-data/plugins:/opt/data/plugins:z
+      # Slices of the agent's home, NOT all of hermes-data: the rest of
+      # /opt/data (bearer key, honcho creds, .env, session state) stays
+      # unmounted and out of shell reach. plugins/ is :ro because the gateway
+      # imports it into its own process — a shell that could write it could
+      # run code there with every secret in reach. The multica-pm CLI only
+      # reads its own dir, so :ro costs nothing. skills/ and memories/ are
+      # what the agent goes looking for at the /opt/data paths its prompt
+      # names; neither carries secrets.
+      - ./hermes-data/plugins:/opt/data/plugins:ro,z
+      - ./hermes-data/skills:/opt/data/skills:ro,z
+      - ./hermes-data/memories:/opt/data/memories:ro,z
+      # Plugin staging: the one writable /opt/data path from the shell (and
+      # from the gateway's file tools; see HERMES_WRITE_SAFE_ROOT). Hermes
+      # never scans it; promote with `cp -r` into plugins/ + restart hermes.
+      - ./hermes-data/plugins-dev:/opt/data/plugins-dev:z
       # Shared artifact hub (bare git repos) at the same absolute path as on
       # the host and in Mika sandboxes, so recorded repo paths + SHAs work for
       # every agent. Handoff convention: ~/agents/HANDOFF.md. ACLs on the dir

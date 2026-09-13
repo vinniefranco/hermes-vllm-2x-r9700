@@ -85,7 +85,7 @@ way to the model is through TLS.
    (`userns_mode: keep-id:uid=10000`), so plain files owned by you are what the
    containers expect:
    ```
-   mkdir -p hermes-data/workbench-ssh configs/workbench/ssh/hostkeys
+   mkdir -p hermes-data/workbench-ssh hermes-data/plugins-dev configs/workbench/ssh/hostkeys
    ssh-keygen -t ed25519 -N "" -f hermes-data/workbench-ssh/id_ed25519
    chmod 700 hermes-data/workbench-ssh
    chmod 400 hermes-data/workbench-ssh/id_ed25519
@@ -191,11 +191,26 @@ Put that in your shell profile or the app's `.desktop` launcher so it sticks.
 The agent runs in containers, not on your machine: the gateway lives in the
 `hermes` container, and every agent shell command is dispatched over SSH to the
 `workbench` sidecar (`terminal.backend: ssh`, port 2222). The workbench's shared
-mounts are `/projects` (this repo's `./projects`) and the `~/agents/repos`
-artifact hub. The agent can't see the host, and it can't read the gateway's own
-secrets/state in `hermes-data/`. Because of the uid mapping, everything the
-agent writes in those shared dirs lands owned by your own user, so you (and any
-host-side tools) can read and edit agent output directly.
+mounts are `/projects` (this repo's `./projects`), the `~/agents/repos`
+artifact hub, read-only views of `hermes-data/{plugins,skills,memories}` at
+their `/opt/data` paths, and the writable plugin staging dir
+`hermes-data/plugins-dev`. The agent can't see the host, and it can't read the
+gateway's own secrets/state in `hermes-data/`. Because of the uid mapping,
+everything the agent writes in those shared dirs lands owned by your own user,
+so you (and any host-side tools) can read and edit agent output directly.
+
+### Agent-authored plugins
+
+Plugins are Python that the gateway imports into its own process, so whatever
+can write `hermes-data/plugins/` can run code with every gateway secret in
+reach. The agent therefore drafts plugins in `hermes-data/plugins-dev/`
+(`/opt/data/plugins-dev` from both its shell and its file tools), which Hermes
+never loads. Promote one after a look:
+
+```
+cp -r hermes-data/plugins-dev/<name> hermes-data/plugins/
+podman restart hermes
+```
 
 ## Switching models
 
