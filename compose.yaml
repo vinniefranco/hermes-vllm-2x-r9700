@@ -96,7 +96,7 @@ services:
       --enable-prefix-caching
       --mamba-cache-mode align
       --gpu-memory-utilization 0.93
-      --max-num-seqs 4
+      --max-num-seqs 8
       -tp 2
       --attention-backend ROCM_AITER_UNIFIED_ATTN
       --speculative-config '{"method": "mtp", "num_speculative_tokens": 2, "attention_backend": "ROCM_AITER_UNIFIED_ATTN", "disable_padded_drafter_batch": true}'
