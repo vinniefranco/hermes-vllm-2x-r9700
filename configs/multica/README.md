@@ -1,10 +1,11 @@
 # Multica host integration
 
 Host-side wiring for running Hermes under the Multica desktop daemon on this
-box. This is separate from the compose stack: the Multica AppImage daemon
-launches a Hermes per task on the host (profile `desktop-api.multica.ai`), with
-its terminal backend in throwaway podman sandboxes. In Multica I named that
-agent "Mika"; it's the same Hermes, and the name is just what shows in the app.
+box. It's separate from the compose stack. The Multica AppImage daemon launches
+a Hermes per task on the host (profile `desktop-api.multica.ai`), and that
+Hermes runs its terminal backend in throwaway podman sandboxes. In Multica I
+named the agent "Mika". It's the same Hermes; the name is only what shows in
+the app.
 
 ## Why the seed config looks the way it does
 
@@ -67,14 +68,15 @@ config's `terminal:` section should say.
 
 ## Gotchas
 
-- **Persistent sandbox containers outlive config changes.** After editing the
+- Sandbox containers persist and outlive config changes. After editing the
   `terminal:` config, run
-  `podman rm -f $(podman ps -aq --filter label=hermes-agent=1)`, otherwise the
-  old container (old mounts, old security opts) is silently reused across tasks.
+  `podman rm -f $(podman ps -aq --filter label=hermes-agent=1)`. Otherwise the
+  old container, with its old mounts and security opts, is silently reused
+  across tasks.
 - The headless Chromium profile (`~/.local/share/headless-chromium`) is shared
   across tasks, so cookies and logins persist between them.
-- `label=disable` turns off SELinux separation for the sandboxes (cap-drop and
-  no-new-privileges still apply), and the `hermes-egress=off` label is only a
-  label. The sandbox has unrestricted egress via pasta.
+- `label=disable` turns off SELinux separation for the sandboxes. cap-drop and
+  no-new-privileges still apply. The `hermes-egress=off` label is only a
+  label; the sandbox has unrestricted egress via pasta.
 - The sandbox terminal timeout (`terminal.timeout`) is seeded at 600 s, which
-  covers most builds. Raise it further for anything longer-running.
+  covers most builds. Raise it for anything that runs longer.

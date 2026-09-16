@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# One-time setup for the ParoQuant profile (compose service vllm-paro): the compose
+# translation of build/radiance-vllm-mxfp4/setup-paroquant.sh. Fetches the checkpoint and
+# the DFlash2 drafter into ./models with the image's own huggingface_hub (no host Python
+# deps), builds the patched libr4d into ./radiance-cache/libr4d, and checks the checkpoint
+# declares a config the kernels are built for. Idempotent: re-run any time, done steps skip.
+#
+#   ./setup-paro            int5 (Launch80/Qwen3.8-27B-PARO-int5, ~21 GiB + 2 GiB drafter)
+#   ./setup-paro --int4     z-lab/Qwen3.8-27B-PARO instead (then set PARO_MODEL_DIR and
+#                           RADIANCE_PQ_I8/PG/ZPE=0 in configs/env/paro.env)
+#
+# Afterwards: ./model use paro   (first start compiles kernels for several minutes)
+set -euo pipefail
+cd "$(dirname "$0")"
+
+IMAGE=docker.io/stilldeadcode/vllm-radiance:0.9.3   # registry-qualified: no short-name prompt
+SUB=build/radiance-vllm-mxfp4
+MODELS=$PWD/models
+DRAFT_REPO=tcclaviger/Qwen3.8-27B-DFlash2-FP8
+DRAFT_DIR=Qwen3.8-27B-DFlash2-FP8
+QUANT=int5
+for a in "$@"; do
+  case "$a" in
+    --int5) QUANT=int5 ;;
+    --int4) QUANT=int4 ;;
+    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown argument: $a" >&2; exit 2 ;;
+  esac
+done
+case $QUANT in
+  int5) SRC_REPO=Launch80/Qwen3.8-27B-PARO-int5; MODEL_DIR=Qwen3.8-27B-PARO-int5; WANT_BITS=5 ;;
+  int4) SRC_REPO=z-lab/Qwen3.8-27B-PARO;         MODEL_DIR=Qwen3.8-27B-PARO;      WANT_BITS=4 ;;
+esac
+
+step() { echo; echo "=== $* ==="; }
+ok()   { echo "  ok: $*"; }
+die()  { echo "ERROR: $*" >&2; exit 1; }
+
+# ---------------------------------------------------------------- 1. sources + image
+step "1/5 upstream sources ($SUB)"
+[ -f $SUB/paroquant/run_paroquant.sh ] || git submodule update --init "$SUB"
+ok "$(git -C $SUB log -1 --format='%h %s')"
+
+step "2/5 image"
+podman image exists "$IMAGE" || podman pull "$IMAGE"
+ok "$IMAGE"
+
+# Download inside the image (it has huggingface_hub) straight into ./models/<dir>: no
+# second copy in the HF cache. Resumes if interrupted.
+hf_get() { # repo dir
+  podman run --rm --security-opt label=disable \
+    -e HF_HOME=/models -e HF_TOKEN="${HF_TOKEN:-}" -v "$MODELS":/models \
+    --entrypoint python3 "$IMAGE" -c '
+import sys
+from huggingface_hub import snapshot_download
+print(snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2]))' "$1" "/models/$2"
+}
+
+# ---------------------------------------------------------------- 3. checkpoint
+step "3/5 checkpoint $SRC_REPO -> models/$MODEL_DIR"
+if [ -f "$MODELS/$MODEL_DIR/config.json" ]; then ok "already present"
+else hf_get "$SRC_REPO" "$MODEL_DIR" >/dev/null; [ -f "$MODELS/$MODEL_DIR/config.json" ] || die "download did not produce config.json"; ok downloaded
+fi
+# The kernels are built for exactly this shape (group 128 baked into the slab layout,
+# rotation table sized for krot <= 8); fail here with a reason, not at first token.
+python3 - "$MODELS/$MODEL_DIR/config.json" "$WANT_BITS" <<'PY' || die "checkpoint not servable: kernels want quant_method=paroquant bits=$WANT_BITS group_size=128 krot<=8"
+import json, sys
+q = json.load(open(sys.argv[1])).get("quantization_config") or {}
+print(f"  quantization_config: {q.get('quant_method')} bits={q.get('bits')} group={q.get('group_size')} krot={q.get('krot')}")
+ok = q.get("quant_method") == "paroquant" and q.get("bits") == int(sys.argv[2]) \
+     and q.get("group_size") == 128 and isinstance(q.get("krot"), int) and 1 <= q["krot"] <= 8
+sys.exit(0 if ok else 1)
+PY
+
+# ---------------------------------------------------------------- 4. drafter
+step "4/5 drafter $DRAFT_REPO -> models/$DRAFT_DIR"
+if [ -f "$MODELS/$DRAFT_DIR/config.json" ]; then ok "already present"
+else hf_get "$DRAFT_REPO" "$DRAFT_DIR" >/dev/null; [ -f "$MODELS/$DRAFT_DIR/config.json" ] || die "download did not produce config.json"; ok downloaded
+fi
+
+# ---------------------------------------------------------------- 5. libr4d
+# The image's libr4d predates the gated-delta-net overflow fix and NaNs this model, so this
+# build is load-bearing. Pinned commit + upstream's extras patch = key b9e42ab-rx6, which is
+# the dir compose mounts at /r4d (upstream serve-mxfp4.sh AUTO_R4D, done by hand here).
+R4D_PIN=b9e42ab; R4D_KEY=$R4D_PIN-rx6
+R4D_CACHE=$PWD/radiance-cache/libr4d
+step "5/5 libr4d $R4D_KEY -> radiance-cache/libr4d/$R4D_KEY"
+if [ -f "$R4D_CACHE/$R4D_KEY/r4d.so" ]; then ok "already built"
+else
+  rm -rf "$R4D_CACHE/.build"; mkdir -p "$R4D_CACHE/.build"
+  git clone -q https://codeberg.org/StillDeadcode/libr4d.git "$R4D_CACHE/.build"
+  git -C "$R4D_CACHE/.build" checkout -q "$R4D_PIN"
+  git -C "$R4D_CACHE/.build" apply "$PWD/$SUB/r4d_radiance_extras.patch"
+  podman run --rm --security-opt label=disable --entrypoint bash \
+    -v "$R4D_CACHE/.build":/work -w /work "$IMAGE" -c ./build.sh
+  [ -f "$R4D_CACHE/.build/r4d.so" ] || die "libr4d build produced no r4d.so"
+  mv "$R4D_CACHE/.build" "$R4D_CACHE/$R4D_KEY"   # publish only a finished build
+  ok built
+fi
+
+cat <<EOT
+
+=== setup complete ===
+configs/env/paro.env serves PARO_MODEL_DIR=$(grep '^PARO_MODEL_DIR=' configs/env/paro.env | cut -d= -f2) (this run fetched $MODEL_DIR).
+Start:   ./model use paro      # first start: hipcc + Triton/inductor compiles, several minutes
+Test:    curl -sk https://localhost/v1/chat/completions -H 'Content-Type: application/json' \\
+           -d '{"model":"qwen3.8-27b-paro-int5","messages":[{"role":"user","content":"Hello!"}]}'
+Back:    ./model use default
+EOT

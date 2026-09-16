@@ -118,14 +118,65 @@ services:
   #     command: >
   #       org/Model --served-model-name foo --host 0.0.0.0 --port 8180 -tp 2 ...
 
+  # ParoQuant int5 (W5A8): Launch80/Qwen3.8-27B-PARO-int5 on the same radiance image, with
+  # upstream's patches + HIP kernels applied at container start by configs/paro/prelude.sh
+  # (the compose translation of build/radiance-vllm-mxfp4/paroquant/run_paroquant.sh at
+  # MODE=prod SPEC=7). One-time downloads + the libr4d build: ./setup-paro. Then
+  # `./model use paro`. Same served id as the default service plus a -paro-int5 one, so
+  # Hermes/Honcho keep working unchanged after the swap. README "ParoQuant int5".
+  vllm-paro:
+    <<: *vllm-base
+    container_name: vllm-paro
+    profiles: ["paro"]
+    networks:
+      stack: { aliases: [vllm] }
+      egress: {}
+    env_file:
+      - ./configs/env/paro.env    # upstream's PARO prod env; model/drafter dir names live here too
+    volumes:
+      - ./models:/models
+      # Upstream sources (patches, kernels, template); pinned submodule.
+      - ./build/radiance-vllm-mxfp4:/patches:ro
+      - ./configs/paro/prelude.sh:/opt/paro-prelude.sh:ro
+      # Patched libr4d built by ./setup-paro (the image's own NaNs this model's GDN layers).
+      - ./radiance-cache/libr4d/b9e42ab-rx6:/r4d:ro
+      # Own compile caches: keyed on model + kernel flags, never shared with ./radiance-cache.
+      - ./radiance-cache/paro-int5:/cache
+      - ./configs/patches/protocol.py:/opt/vllm/lib/python3.12/site-packages/vllm/entrypoints/openai/chat_completion/protocol.py:ro
+    entrypoint: ["bash", "/opt/paro-prelude.sh"]
+    # Args after the model path (the prelude prepends /models/$PARO_MODEL_DIR). Serving
+    # config is upstream MODE=prod: R4D attention, fp8 KV, DFlash2 drafter with 7 draft
+    # tokens, 262k ctx, upstream's compilation-config. Tool/reasoning parsers as the
+    # default service (verified with Hermes); template is upstream's froggeric v22.3 (the
+    # one its GSM8K band was measured with; v22.1 is what the default service mounts).
+    command: >
+      --served-model-name qwen3.8-27b qwen3.8-27b-paro-int5
+      --chat-template /patches/qwen-fixed-v22.3.jinja
+      --limit-mm-per-prompt '{"image": 99, "audio": 0, "video": 0}'
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_xml
+      --reasoning-parser qwen3
+      --kv-cache-dtype fp8
+      --max-model-len 262144
+      --max-num-batched-tokens 8192
+      --max-num-seqs 8
+      --enable-prefix-caching
+      --mamba-cache-mode align
+      --gpu-memory-utilization 0.92
+      -tp 2
+      --attention-backend R4D
+      --speculative-config '{"method": "dflash", "model": "/models/Qwen3.8-27B-DFlash2-FP8", "num_speculative_tokens": 7, "attention_backend": "TRITON_ATTN", "disable_padded_drafter_batch": true, "draft_sample_method": "greedy"}'
+      --no-async-scheduling
+      --compilation-config '{"pass_config": {"fuse_norm_quant": true, "fuse_act_quant": true}, "compile_sizes": [1, 2, 4, 8], "inductor_compile_config": {"enable_auto_functionalized_v2": false, "size_asserts": false, "alignment_asserts": false, "scalar_asserts": false, "combo_kernels": true, "benchmark_combo_kernel": true, "triton.cooperative_reductions": true}}'
+      --host 0.0.0.0
+      --port 8180
+
   # TLS termination. Hostnames + routing live in configs/caddy/conf/Caddyfile;
   # client trust setup and the port-443 sysctl are in the README.
   caddy:
     image: docker.io/library/caddy:2
     container_name: caddy
     restart: unless-stopped
-    depends_on:
-      - vllm
     networks:
       - stack                        # internal-only; internal CA needs no egress, inbound publish still works
     ports:
@@ -150,8 +201,6 @@ services:
     # (claude/omp) can collaborate on the same files.
     userns_mode: "keep-id:uid=10000,gid=10000"
     depends_on:
-      vllm:
-        condition: service_healthy
       workbench:
         condition: service_healthy    # agent shells run there (terminal.backend: ssh)
     # Bundled Chromium needs ~1g shm (podman's 64M default crashes it); the
