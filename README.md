@@ -237,49 +237,49 @@ comment. Non-vLLM servers just need the same devices, the `vllm` alias, port
 8180 and a `/health` endpoint. `./model use <name>` picks it up with no script
 changes.
 
-### ParoQuant int5 (`paro` profile)
+### ParoQuant MXFP6 (`paro` profile)
 
-[Launch80/Qwen3.8-27B-PARO-int5](https://huggingface.co/Launch80/Qwen3.8-27B-PARO-int5)
-is Qwen3.8-27B with ParoQuant rotations on int5 weights, served W5A8 through
-[radiance-vllm-mxfp4](https://codeberg.org/ggz14/radiance-vllm-mxfp4)'s kernels
-on the same radiance image. Upstream drives it with two scripts and `podman
-run`; here that is the `vllm-paro` service plus one setup script:
+[hugypufy/Swift-Qwen3.8-27B-PARO-MXFP6](https://huggingface.co/hugypufy/Swift-Qwen3.8-27B-PARO-MXFP6)
+is the [Swift fine-tune](https://huggingface.co/ukisai/Swift-Qwen3.8-27b) of
+Qwen3.8-27B (shorter reasoning traces, a few points down on AIME/HMMT) with
+ParoQuant rotations on MXFP6 weights, served W6A8 through the kernels in
+[hugypufy/radiance-vllm-mxfp4](https://codeberg.org/hugypufy/radiance-vllm-mxfp4)
+on the same radiance image. The submodule tracks that fork until ggz14 merges
+[PR #46](https://codeberg.org/ggz14/radiance-vllm-mxfp4/pulls/46). Upstream
+drives it with two scripts and `podman run`; here that is the `vllm-paro`
+service plus one setup script:
 
 ```
-git submodule update --init      # upstream sources -> build/radiance-vllm-mxfp4 (pinned)
-./setup-paro                     # ~21 GiB checkpoint + 2 GiB DFlash2 drafter into ./models,
+git submodule update --init      # fork sources -> build/radiance-vllm-mxfp4 (pinned)
+./setup-paro                     # ~25 GiB checkpoint + 2 GiB DFlash2 drafter into ./models,
                                  # builds the patched libr4d into ./radiance-cache/libr4d
 ./model use paro                 # swap it in; first start compiles kernels (several minutes,
-                                 # looks idle; cached under ./radiance-cache/paro-int5 after)
+                                 # looks idle; cached under ./radiance-cache/paro-mxfp6 after)
 ./model use default              # back to FP8
 ```
 
-Compared with upstream's `setup-paroquant.sh --int5` and
-`MODEL_DIR=… MODE=prod SPEC=7 paroquant/run_paroquant.sh`, the pieces map like
-this:
+Compared with upstream's `setup-paroquant.sh --mxfp6` and
+`MODEL_DIR=… MODE=prod SPEC=7 paroquant/run_paroquant.sh`:
 
-- The in-container prelude (source patches, `hipcc` of the MXFP4 + ParoQuant
-  kernels, sitecustomize registration) is `configs/paro/prelude.sh`, run as the
-  service's entrypoint on every start. It's idempotent, so compose restarts
-  are fine.
-- The `-e` block is `configs/env/paro.env`, at `MODE=prod` values with the
-  int5 activation-quant defaults (`RADIANCE_PQ_I8/PG/ZPE=1`) written out. The
-  model and drafter directory names live there too.
+- The in-container prelude (source patches, `hipcc`, sitecustomize registration)
+  is `configs/paro/prelude.sh`, the service's entrypoint. Idempotent, so compose
+  restarts are fine.
+- The `-e` block is `configs/env/paro.env`, at `MODE=prod` values. Model and
+  drafter dir names live there too.
 - The `vllm serve` flags are the service's `command:` (SPEC=7, R4D attention,
   fp8 KV, 262k ctx). Ports, networks, devices and caps come from the shared
   `x-vllm-base`; no `--privileged`, `--ipc=host` or host networking.
-- The PARO checkpoint ships no MTP head, so the external DFlash2-FP8 drafter is
-  the speculative path. The image's own libr4d NaNs this model's gated-delta-net
-  layers, which is why `./setup-paro` builds the pinned + patched one.
-- It serves as `qwen3.8-27b` (so Hermes and Honcho need no change) and as
-  `qwen3.8-27b-paro-int5`. Upstream's `DRY_RUN=1` is
-  `podman-compose --profile paro config`, and `gpu-detect.sh` is moot since
-  TP=2 is fixed.
+- The checkpoint ships no MTP head, so the external DFlash2-FP8 drafter is the
+  speculative path. The image's own libr4d NaNs this model's gated-delta-net
+  layers; `./setup-paro` builds the patched one.
+- Serves as `qwen3.8-27b` (Hermes and Honcho need no change; that id is now the
+  Swift fine-tune) and `swift-qwen3.8-27b-paro-mxfp6`. Upstream's `DRY_RUN=1` is
+  `podman-compose --profile paro config`.
 
-For int4 PARO (`z-lab/Qwen3.8-27B-PARO`): run `./setup-paro --int4`, then in
-`configs/env/paro.env` set `PARO_MODEL_DIR=Qwen3.8-27B-PARO` and the three
-`RADIANCE_PQ_I8/PG/ZPE` to 0, and point the `/cache` mount at a fresh dir,
-since compile caches are per checkpoint + flags.
+For int5 (`Launch80/Qwen3.8-27B-PARO-int5`) or int4 (`z-lab/Qwen3.8-27B-PARO`):
+`./setup-paro --int5` / `--int4`, then in `configs/env/paro.env` set
+`PARO_MODEL_DIR` and `RADIANCE_PQ_I8/PG/ZPE` (1 for int5, 0 for int4), and give
+`/cache` a fresh dir.
 
 ## Layout
 

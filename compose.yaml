@@ -118,12 +118,10 @@ services:
   #     command: >
   #       org/Model --served-model-name foo --host 0.0.0.0 --port 8180 -tp 2 ...
 
-  # ParoQuant int5 (W5A8): Launch80/Qwen3.8-27B-PARO-int5 on the same radiance image, with
-  # upstream's patches + HIP kernels applied at container start by configs/paro/prelude.sh
-  # (the compose translation of build/radiance-vllm-mxfp4/paroquant/run_paroquant.sh at
-  # MODE=prod SPEC=7). One-time downloads + the libr4d build: ./setup-paro. Then
-  # `./model use paro`. Same served id as the default service plus a -paro-int5 one, so
-  # Hermes/Honcho keep working unchanged after the swap. README "ParoQuant int5".
+  # ParoQuant MXFP6 (W6A8): hugypufy/Swift-Qwen3.8-27B-PARO-MXFP6 (Swift fine-tune, not stock
+  # Qwen) on the radiance image; patches + kernels applied at start by configs/paro/prelude.sh.
+  # Submodule tracks hugypufy's fork until ggz14 merges the MXFP6 PR. ./setup-paro, then
+  # `./model use paro`. README "ParoQuant MXFP6".
   vllm-paro:
     <<: *vllm-base
     container_name: vllm-paro
@@ -141,7 +139,7 @@ services:
       # Patched libr4d built by ./setup-paro (the image's own NaNs this model's GDN layers).
       - ./radiance-cache/libr4d/b9e42ab-rx6:/r4d:ro
       # Own compile caches: keyed on model + kernel flags, never shared with ./radiance-cache.
-      - ./radiance-cache/paro-int5:/cache
+      - ./radiance-cache/paro-mxfp6:/cache
       - ./configs/patches/protocol.py:/opt/vllm/lib/python3.12/site-packages/vllm/entrypoints/openai/chat_completion/protocol.py:ro
     entrypoint: ["bash", "/opt/paro-prelude.sh"]
     # Args after the model path (the prelude prepends /models/$PARO_MODEL_DIR). Serving
@@ -150,7 +148,7 @@ services:
     # default service (verified with Hermes); template is upstream's froggeric v22.3 (the
     # one its GSM8K band was measured with; v22.1 is what the default service mounts).
     command: >
-      --served-model-name qwen3.8-27b qwen3.8-27b-paro-int5
+      --served-model-name qwen3.8-27b swift-qwen3.8-27b-paro-mxfp6
       --chat-template /patches/qwen-fixed-v22.3.jinja
       --limit-mm-per-prompt '{"image": 99, "audio": 0, "video": 0}'
       --enable-auto-tool-choice

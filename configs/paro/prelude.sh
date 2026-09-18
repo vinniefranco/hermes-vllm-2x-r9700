@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Container-start prelude for the ParoQuant (W5A8 / W4A8) serve. Podman-compose translation
+# Container-start prelude for the ParoQuant (W6A8 / W5A8 / W4A8) serve. Podman-compose translation
 # of the in-container half of upstream's paroquant/run_paroquant.sh (the submodule at
 # build/radiance-vllm-mxfp4, mounted at /patches): apply the radiance source patches to the
 # image's vLLM, compile the MXFP4 + ParoQuant HIP kernels into site-packages, drop in the
@@ -27,9 +27,10 @@ die() { echo "[paro] ERROR: $*" >&2; exit 1; }
 # guards this with [ -f /r4d/r4d.so ] and silently falls back; here a missing build is fatal.
 [ -f /r4d/r4d.so ] || die "patched libr4d missing (./radiance-cache/libr4d/<key>/r4d.so); run ./setup-paro"
 
-PQ_BITS=$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("quantization_config") or {}).get("bits", 4))' "/models/$MODEL_DIR/config.json")
-echo "[paro] model=/models/$MODEL_DIR bits=$PQ_BITS drafter=/models/$DRAFTER_DIR"
-echo "[paro] PQ_I8=${RADIANCE_PQ_I8:-0} PQ_PG=${RADIANCE_PQ_PG:-0} PQ_ZPE=${RADIANCE_PQ_ZPE:-0} (configs/env/paro.env; int5 wants all three on)"
+read -r PQ_BITS PQ_METHOD < <(python3 -c 'import json,sys; q=(json.load(open(sys.argv[1])).get("quantization_config") or {}); print(q.get("bits", 4), q.get("quant_method", "-"))' "/models/$MODEL_DIR/config.json")
+echo "[paro] model=/models/$MODEL_DIR $PQ_METHOD bits=$PQ_BITS drafter=/models/$DRAFTER_DIR"
+echo "[paro] PQ_I8=${RADIANCE_PQ_I8:-0} PQ_PG=${RADIANCE_PQ_PG:-0} PQ_ZPE=${RADIANCE_PQ_ZPE:-0} (configs/env/paro.env; 1 for int5, else 0)"
+[ "$PQ_METHOD" != paroquant_mxfp6 ] || [ "${RADIANCE_MXFP4_WPERM:-1}" = 1 ] || die "paroquant_mxfp6 needs RADIANCE_MXFP4_WPERM=1 (configs/env/paro.env)"
 
 # ---- radiance source patches (same list and order as upstream run_paroquant.sh)
 cd /patches
@@ -48,7 +49,7 @@ cp radiance_mxfp4.py radiance_gemm.py radiance_gdn.py radiance_gdnmerge.py radia
 cp /r4d/r4d.so "$SP"/r4d.so
 echo "[radiance] using patched r4d.so from /r4d"
 
-# ---- HIP kernels: MXFP4 (inert for int4/int5 weights, load-bearing for PARO-MXFP4) + ParoQuant.
+# ---- HIP kernels: MXFP4/MXFP6 + ParoQuant.
 build() { # src dst
   if [ -f "$2" ] && [ ! "$1" -nt "$2" ]; then echo "[paro] $2 up to date"; return; fi
   echo "[paro] hipcc $1 -> $2 (a couple of minutes)"

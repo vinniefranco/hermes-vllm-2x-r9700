@@ -5,9 +5,9 @@
 # deps), builds the patched libr4d into ./radiance-cache/libr4d, and checks the checkpoint
 # declares a config the kernels are built for. Idempotent: re-run any time, done steps skip.
 #
-#   ./setup-paro            int5 (Launch80/Qwen3.8-27B-PARO-int5, ~21 GiB + 2 GiB drafter)
-#   ./setup-paro --int4     z-lab/Qwen3.8-27B-PARO instead (then set PARO_MODEL_DIR and
-#                           RADIANCE_PQ_I8/PG/ZPE=0 in configs/env/paro.env)
+#   ./setup-paro            hugypufy/Swift-Qwen3.8-27B-PARO-MXFP6 (~25 GiB + 2 GiB drafter)
+#   ./setup-paro --int5     Launch80/Qwen3.8-27B-PARO-int5; --int4: z-lab/Qwen3.8-27B-PARO
+#                           (then update PARO_MODEL_DIR + PQ flags in configs/env/paro.env)
 #
 # Afterwards: ./model use paro   (first start compiles kernels for several minutes)
 set -euo pipefail
@@ -18,18 +18,21 @@ SUB=build/radiance-vllm-mxfp4
 MODELS=$PWD/models
 DRAFT_REPO=tcclaviger/Qwen3.8-27B-DFlash2-FP8
 DRAFT_DIR=Qwen3.8-27B-DFlash2-FP8
-QUANT=int5
+QUANT=mxfp6
 for a in "$@"; do
   case "$a" in
+    --mxfp6) QUANT=mxfp6 ;;
     --int5) QUANT=int5 ;;
     --int4) QUANT=int4 ;;
-    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $a" >&2; exit 2 ;;
   esac
 done
+WANT_METHOD=paroquant
 case $QUANT in
-  int5) SRC_REPO=Launch80/Qwen3.8-27B-PARO-int5; MODEL_DIR=Qwen3.8-27B-PARO-int5; WANT_BITS=5 ;;
-  int4) SRC_REPO=z-lab/Qwen3.8-27B-PARO;         MODEL_DIR=Qwen3.8-27B-PARO;      WANT_BITS=4 ;;
+  mxfp6) SRC_REPO=hugypufy/Swift-Qwen3.8-27B-PARO-MXFP6; MODEL_DIR=Swift-Qwen3.8-27B-PARO-MXFP6; WANT_BITS=6; WANT_METHOD=paroquant_mxfp6 ;;
+  int5)  SRC_REPO=Launch80/Qwen3.8-27B-PARO-int5;        MODEL_DIR=Qwen3.8-27B-PARO-int5;        WANT_BITS=5 ;;
+  int4)  SRC_REPO=z-lab/Qwen3.8-27B-PARO;                MODEL_DIR=Qwen3.8-27B-PARO;             WANT_BITS=4 ;;
 esac
 
 step() { echo; echo "=== $* ==="; }
@@ -61,14 +64,15 @@ step "3/5 checkpoint $SRC_REPO -> models/$MODEL_DIR"
 if [ -f "$MODELS/$MODEL_DIR/config.json" ]; then ok "already present"
 else hf_get "$SRC_REPO" "$MODEL_DIR" >/dev/null; [ -f "$MODELS/$MODEL_DIR/config.json" ] || die "download did not produce config.json"; ok downloaded
 fi
-# The kernels are built for exactly this shape (group 128 baked into the slab layout,
-# rotation table sized for krot <= 8); fail here with a reason, not at first token.
-python3 - "$MODELS/$MODEL_DIR/config.json" "$WANT_BITS" <<'PY' || die "checkpoint not servable: kernels want quant_method=paroquant bits=$WANT_BITS group_size=128 krot<=8"
+# The kernels are built for exactly this shape; fail here with a reason, not at first token.
+python3 - "$MODELS/$MODEL_DIR/config.json" "$WANT_BITS" "$WANT_METHOD" <<'PY' || die "checkpoint not servable: kernels want quant_method=$WANT_METHOD bits=$WANT_BITS group_size=128 krot<=8"
 import json, sys
 q = json.load(open(sys.argv[1])).get("quantization_config") or {}
 print(f"  quantization_config: {q.get('quant_method')} bits={q.get('bits')} group={q.get('group_size')} krot={q.get('krot')}")
-ok = q.get("quant_method") == "paroquant" and q.get("bits") == int(sys.argv[2]) \
+ok = q.get("quant_method") == sys.argv[3] and q.get("bits") == int(sys.argv[2]) \
      and q.get("group_size") == 128 and isinstance(q.get("krot"), int) and 1 <= q["krot"] <= 8
+if sys.argv[3] == "paroquant_mxfp6":
+    ok = ok and q.get("mx_block") == 32 and q.get("max_exp_spread", 99) <= 6
 sys.exit(0 if ok else 1)
 PY
 
@@ -104,6 +108,6 @@ cat <<EOT
 configs/env/paro.env serves PARO_MODEL_DIR=$(grep '^PARO_MODEL_DIR=' configs/env/paro.env | cut -d= -f2) (this run fetched $MODEL_DIR).
 Start:   ./model use paro      # first start: hipcc + Triton/inductor compiles, several minutes
 Test:    curl -sk https://localhost/v1/chat/completions -H 'Content-Type: application/json' \\
-           -d '{"model":"qwen3.8-27b-paro-int5","messages":[{"role":"user","content":"Hello!"}]}'
+           -d '{"model":"swift-qwen3.8-27b-paro-mxfp6","messages":[{"role":"user","content":"Hello!"}]}'
 Back:    ./model use default
 EOT
