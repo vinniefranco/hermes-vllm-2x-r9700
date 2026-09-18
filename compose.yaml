@@ -147,6 +147,7 @@ services:
     # tokens, 262k ctx, upstream's compilation-config. Tool/reasoning parsers as the
     # default service (verified with Hermes); template is upstream's froggeric v22.3 (the
     # one its GSM8K band was measured with; v22.1 is what the default service mounts).
+    # KV pin is hugypufy's for this checkpoint on 2x R9700; it bypasses the util profile.
     command: >
       --served-model-name qwen3.8-27b swift-qwen3.8-27b-paro-mxfp6
       --chat-template /patches/qwen-fixed-v22.3.jinja
@@ -161,6 +162,7 @@ services:
       --enable-prefix-caching
       --mamba-cache-mode align
       --gpu-memory-utilization 0.92
+      --kv-cache-memory-bytes 13500000000
       -tp 2
       --attention-backend R4D
       --speculative-config '{"method": "dflash", "model": "/models/Qwen3.8-27B-DFlash2-FP8", "num_speculative_tokens": 7, "attention_backend": "TRITON_ATTN", "disable_padded_drafter_batch": true, "draft_sample_method": "greedy"}'
