@@ -25,3 +25,6 @@ configs/workbench/ssh/
 .DS_Store
 scratch/
 tmp/
+
+# benchmark datasets (ShareGPT json, generated long-doc prompts)
+bench/datasets/
