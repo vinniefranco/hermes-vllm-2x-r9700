@@ -136,6 +136,7 @@ services:
       # Upstream sources (patches, kernels, template); pinned submodule.
       - ./build/radiance-vllm-mxfp4:/patches:ro
       - ./configs/paro/prelude.sh:/opt/paro-prelude.sh:ro
+      - ./configs/paro/paro_pdf.py:/opt/paro_pdf.py:ro
       # Patched libr4d built by ./setup-paro (the image's own NaNs this model's GDN layers).
       - ./radiance-cache/libr4d/b9e42ab-rx6:/r4d:ro
       # Own compile caches: keyed on model + kernel flags, never shared with ./radiance-cache.

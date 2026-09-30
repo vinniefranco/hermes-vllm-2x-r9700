@@ -275,6 +275,9 @@ Compared with upstream's `setup-paroquant.sh --mxfp6` and
 - Serves as `qwen3.8-27b` (Hermes and Honcho need no change; that id is now the
   Swift fine-tune) and `swift-qwen3.8-27b-paro-mxfp6`. Upstream's `DRY_RUN=1` is
   `podman-compose --profile paro config`.
+- Accepts PDFs (not upstream): OpenAI `file` / Responses `input_file` parts with
+  base64 `file_data`. Each page becomes its text layer plus a rendered image
+  (`configs/paro/paro_pdf.py`; `PARO_PDF_DPI`, `PARO_PDF_MAX_PAGES` in paro.env).
 
 For int5 (`Launch80/Qwen3.8-27B-PARO-int5`) or int4 (`z-lab/Qwen3.8-27B-PARO`):
 `./setup-paro --int5` / `--int4`, then in `configs/env/paro.env` set

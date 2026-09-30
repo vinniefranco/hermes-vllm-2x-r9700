@@ -74,6 +74,21 @@ except Exception as e:
 PY
 fi
 
+# ---- PDF content parts (configs/paro/paro_pdf.py): pages rendered to images via pypdfium2.
+python3 -c 'import pypdfium2' 2>/dev/null || pip install -q pypdfium2==5.13.0 \
+  || echo "[paro] WARNING: pypdfium2 install failed; PDF parts will 400"
+cp /opt/paro_pdf.py "$SP"/
+python3 - "$SP"/vllm/entrypoints/chat_utils.py <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+if "paro_pdf" not in s:
+    a = "    content = list[_ContentPart]()\n\n    mm_parser = mm_tracker.create_parser("
+    assert s.count(a) == 1, "chat_utils anchor moved; update the paro PDF patch"
+    s = s.replace(a, "    import paro_pdf\n    parts = paro_pdf.expand_pdf_parts(parts)\n" + a)
+    open(p, "w").write(s)
+    print("[paro] PDF parts patch applied")
+PY
+
 # Leave the bind mounts before exec: a stale .so in the cwd precedes site-packages on sys.path.
 cd /
 exec /opt/radiance_entrypoint.sh "/models/$MODEL_DIR" "$@"
