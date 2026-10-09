@@ -12,8 +12,9 @@ few host details (GPU arch, group IDs, firewall, DNS) will differ.
 
 ## What's in the box
 
-vLLM serves `Qwen/Qwen3.8-27B-FP8`, tensor-parallel across both R9700s. The
-image is [vllm-radiance](https://codeberg.org/StillDeadcode/vllm-radiance), a
+vLLM serves `hugypufy/Swift-Qwen3.8-27B-PARO-MXFP6` (see "ParoQuant MXFP6"),
+tensor-parallel across both R9700s. The image is
+[vllm-radiance](https://codeberg.org/StillDeadcode/vllm-radiance), a
 prebuilt gfx1201-only vLLM with the RDNA4 patches and hand-tuned kernels baked
 in. It answers the OpenAI API (`/v1/chat/completions`, `/v1/models`, ...) and
 the Anthropic API (`/v1/messages`) on the same port.
@@ -223,7 +224,7 @@ model replaces it rather than running alongside. `./model` does the swap:
 ./model list              # default + the profiles you can switch to
 ./model status            # which model server is up
 ./model use <profile>     # stop vllm, bring up that profile's server
-./model use default       # back to Qwen3.8-27B-FP8 on vLLM
+./model use default       # back to the paro default
 ```
 
 Whatever is up takes the `vllm` network alias, so Caddy's `/v1/*` route and
@@ -237,7 +238,7 @@ comment. Non-vLLM servers just need the same devices, the `vllm` alias, port
 8180 and a `/health` endpoint. `./model use <name>` picks it up with no script
 changes.
 
-### ParoQuant MXFP6 (`paro` profile)
+### ParoQuant MXFP6 (default)
 
 [hugypufy/Swift-Qwen3.8-27B-PARO-MXFP6](https://huggingface.co/hugypufy/Swift-Qwen3.8-27B-PARO-MXFP6)
 is the [Swift fine-tune](https://huggingface.co/ukisai/Swift-Qwen3.8-27b) of
@@ -246,16 +247,15 @@ ParoQuant rotations on MXFP6 weights, served W6A8 through the kernels in
 [hugypufy/radiance-vllm-mxfp4](https://codeberg.org/hugypufy/radiance-vllm-mxfp4)
 on the same radiance image. The submodule tracks that fork until ggz14 merges
 [PR #46](https://codeberg.org/ggz14/radiance-vllm-mxfp4/pulls/46). Upstream
-drives it with two scripts and `podman run`; here that is the `vllm-paro`
+drives it with two scripts and `podman run`; here that is the default `vllm`
 service plus one setup script:
 
 ```
 git submodule update --init      # fork sources -> build/radiance-vllm-mxfp4 (pinned)
 ./setup-paro                     # ~25 GiB checkpoint + 2 GiB DFlash2 drafter into ./models,
                                  # builds the patched libr4d into ./radiance-cache/libr4d
-./model use paro                 # swap it in; first start compiles kernels (several minutes,
-                                 # looks idle; cached under ./radiance-cache/paro-mxfp6 after)
-./model use default              # back to FP8
+./model use default              # first start compiles kernels (several minutes, looks
+                                 # idle; cached under ./radiance-cache/paro-mxfp6 after)
 ```
 
 Compared with upstream's `setup-paroquant.sh --mxfp6` and
@@ -274,7 +274,7 @@ Compared with upstream's `setup-paroquant.sh --mxfp6` and
   layers; `./setup-paro` builds the patched one.
 - Serves as `qwen3.8-27b` (Hermes and Honcho need no change; that id is now the
   Swift fine-tune) and `swift-qwen3.8-27b-paro-mxfp6`. Upstream's `DRY_RUN=1` is
-  `podman-compose --profile paro config`.
+  `podman-compose config`.
 - Accepts PDFs (not upstream): OpenAI `file` / Responses `input_file` parts with
   base64 `file_data`. Each page becomes its text layer plus a rendered image
   (`configs/paro/paro_pdf.py`; `PARO_PDF_DPI`, `PARO_PDF_MAX_PAGES` in paro.env).
@@ -284,12 +284,31 @@ For int5 (`Launch80/Qwen3.8-27B-PARO-int5`) or int4 (`z-lab/Qwen3.8-27B-PARO`):
 `PARO_MODEL_DIR` and `RADIANCE_PQ_I8/PG/ZPE` (1 for int5, 0 for int4), and give
 `/cache` a fresh dir.
 
+### Qwen3.8-Flash-Next (`flash` profile)
+
+[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) (125B MoE, 6B active)
+on StillDeadcode's [radiance](https://codeberg.org/StillDeadcode/radiance) engine, its own
+C++/HIP server (not vLLM), from his
+[4-bit-expert container](https://huggingface.co/StillDeadcode/qwen3.8-next-flash-fp8-iq4r-moe).
+Hot experts stay in VRAM, the rest stream from a 12 GiB pinned pool per card, the n-gram
+table is read off disk. Needs ~32 GB free RAM.
+
+```
+mkdir -p models/rad && chattr +C models/rad   # before the file lands: no btrfs compression
+curl -LC - -o models/rad/qwen3.8-next-flash-fp8-iq4r-moe.rad \
+  https://huggingface.co/StillDeadcode/qwen3.8-next-flash-fp8-iq4r-moe/resolve/main/qwen3.8-next-flash-fp8-iq4r-moe.rad
+./model use flash
+```
+
+Flags are upstream's `deploy/compose/flashnext.yaml`, with a 16 GiB prefix-cache disk tier
+(upstream: 128) and `--reasoning-effort medium`. Any request model name works.
+
 ## Layout
 
 - `compose.yaml` is the whole stack; `model` switches which model server is up.
 - `build/workbench/` builds the agent's SSH sandbox image; `build/radiance-vllm-mxfp4/`
   is the pinned upstream ParoQuant/MXFP4 sources (submodule), used by
-  `configs/paro/prelude.sh` + `configs/env/paro.env` (the `paro` profile) and `setup-paro`.
+  `configs/paro/prelude.sh` + `configs/env/paro.env` (the default `vllm` service) and `setup-paro`.
 - `bench/run-bench.sh` is the serving benchmark harness.
 - `configs/caddy/conf/Caddyfile` does TLS + routing; `configs/squid/squid.conf`
   is the egress policy.

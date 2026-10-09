@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time setup for the ParoQuant profile (compose service vllm-paro): the compose
+# One-time setup for the ParoQuant profile (compose service vllm, the default): the compose
 # translation of build/radiance-vllm-mxfp4/setup-paroquant.sh. Fetches the checkpoint and
 # the DFlash2 drafter into ./models with the image's own huggingface_hub (no host Python
 # deps), builds the patched libr4d into ./radiance-cache/libr4d, and checks the checkpoint
@@ -9,7 +9,7 @@
 #   ./setup-paro --int5     Launch80/Qwen3.8-27B-PARO-int5; --int4: z-lab/Qwen3.8-27B-PARO
 #                           (then update PARO_MODEL_DIR + PQ flags in configs/env/paro.env)
 #
-# Afterwards: ./model use paro   (first start compiles kernels for several minutes)
+# Afterwards: ./model use default   (first start compiles kernels for several minutes)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -106,8 +106,7 @@ cat <<EOT
 
 === setup complete ===
 configs/env/paro.env serves PARO_MODEL_DIR=$(grep '^PARO_MODEL_DIR=' configs/env/paro.env | cut -d= -f2) (this run fetched $MODEL_DIR).
-Start:   ./model use paro      # first start: hipcc + Triton/inductor compiles, several minutes
+Start:   ./model use default   # first start: hipcc + Triton/inductor compiles, several minutes
 Test:    curl -sk https://localhost/v1/chat/completions -H 'Content-Type: application/json' \\
            -d '{"model":"swift-qwen3.8-27b-paro-mxfp6","messages":[{"role":"user","content":"Hello!"}]}'
-Back:    ./model use default
 EOT

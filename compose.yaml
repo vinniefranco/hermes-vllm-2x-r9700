@@ -1,4 +1,4 @@
-# vLLM (Qwen3.8-27B-FP8, 2x AMD R9700) + Hermes Agent: podman compose
+# vLLM (Swift-Qwen3.8-27B-PARO-MXFP6, 2x AMD R9700) + Hermes Agent: podman compose
 #
 # vLLM service runs the prebuilt vllm-radiance image
 # (https://codeberg.org/StillDeadcode/vllm-radiance): a gfx1201-only vLLM with
@@ -64,71 +64,13 @@ x-vllm-base: &vllm-base
     retries: 40
     start_period: 900s             # first start downloads weights + JIT-compiles kernels
 services:
-  # Default model: Qwen3.8-27B-FP8 on both cards. This is what Hermes/Honcho
-  # use and what Caddy proxies as `vllm:8180`. Always on.
+  # Default model: ParoQuant MXFP6 (W6A8) hugypufy/Swift-Qwen3.8-27B-PARO-MXFP6 (Swift fine-tune,
+  # not stock Qwen) on the radiance image; patches + kernels applied at start by
+  # configs/paro/prelude.sh. Submodule tracks hugypufy's fork until ggz14 merges the MXFP6 PR.
+  # ./setup-paro once. README "ParoQuant MXFP6". Always on; what Caddy proxies as `vllm:8180`.
   vllm:
     <<: *vllm-base
     container_name: vllm
-    # Image entrypoint wraps `vllm serve`; model is the positional arg.
-    # Chat template: froggeric/Qwen-Fixed-Chat-Templates (Qwen3.5/3.6/3.8 fixes:
-    # medium-reasoning default, think-level steering tags, fast mode, empty-think
-    # dedup). Pairs with qwen3_xml parser per that repo's README. The older
-    # known-good template remains at ./configs/chat-templates/qwen.jinja.
-    #
-    # Serving knobs per upstream's recommendations: kv fp8 (halves KV
-    # bandwidth, doubles KV capacity; use bf16 if output quality ever looks
-    # off), MTP depth 8 under the dynamic-draft controller (see radiance.env),
-    # and --no-async-scheduling, which disable_padded_drafter_batch requires.
-    command: >
-      Qwen/Qwen3.8-27B-FP8
-      --served-model-name qwen3.8-27b
-      --chat-template /app/chat-templates/qwen3.8-fixed.jinja
-      --limit-mm-per-prompt '{"image": 99, "audio": 0, "video": 0}'
-      --enable-auto-tool-choice
-      --tool-call-parser qwen3_xml
-      --reasoning-parser qwen3
-      --quantization fp8
-      --kv-cache-dtype fp8
-      --max-model-len 262144
-      --max-num-batched-tokens 16384
-      --enable-prefix-caching
-      --mamba-cache-mode align
-      --gpu-memory-utilization 0.93
-      --max-num-seqs 8
-      -tp 2
-      --attention-backend ROCM_AITER_UNIFIED_ATTN
-      --speculative-config '{"method": "mtp", "num_speculative_tokens": 2, "attention_backend": "ROCM_AITER_UNIFIED_ATTN", "disable_padded_drafter_batch": true}'
-      --no-async-scheduling
-      --host 0.0.0.0
-      --port 8180
-
-  # ── Alternate models (opt-in profiles) ────────────────────────────────────
-  # Both cards are committed to `vllm`, so an alternate model REPLACES it;
-  # `./model use <name>` does the swap (README "Switching models"). Each
-  # alternate takes the `vllm` alias on the stack net so Caddy's /v1/* route
-  # and every client URL keep working. To add one, merge *vllm-base:
-  #
-  #   vllm-foo:
-  #     <<: *vllm-base
-  #     container_name: vllm-foo
-  #     profiles: ["foo"]
-  #     networks:
-  #       stack: { aliases: [vllm] }
-  #       egress: {}
-  #     command: >
-  #       org/Model --served-model-name foo --host 0.0.0.0 --port 8180 -tp 2 ...
-
-  # ParoQuant MXFP6 (W6A8): hugypufy/Swift-Qwen3.8-27B-PARO-MXFP6 (Swift fine-tune, not stock
-  # Qwen) on the radiance image; patches + kernels applied at start by configs/paro/prelude.sh.
-  # Submodule tracks hugypufy's fork until ggz14 merges the MXFP6 PR. ./setup-paro, then
-  # `./model use paro`. README "ParoQuant MXFP6".
-  vllm-paro:
-    <<: *vllm-base
-    container_name: vllm-paro
-    profiles: ["paro"]
-    networks:
-      stack: { aliases: [vllm] }
-      egress: {}
     env_file:
       - ./configs/env/paro.env    # upstream's PARO prod env; model/drafter dir names live here too
     volumes:
@@ -145,9 +87,8 @@ services:
     entrypoint: ["bash", "/opt/paro-prelude.sh"]
     # Args after the model path (the prelude prepends /models/$PARO_MODEL_DIR). Serving
     # config is upstream MODE=prod: R4D attention, fp8 KV, DFlash2 drafter with 7 draft
-    # tokens, 262k ctx, upstream's compilation-config. Tool/reasoning parsers as the
-    # default service (verified with Hermes); template is upstream's froggeric v22.3 (the
-    # one its GSM8K band was measured with; v22.1 is what the default service mounts).
+    # tokens, 262k ctx, upstream's compilation-config. Tool/reasoning parsers verified with
+    # Hermes; template is upstream's froggeric v22.3 (the one its GSM8K band was measured with).
     # KV pin is hugypufy's for this checkpoint on 2x R9700; it bypasses the util profile.
     command: >
       --served-model-name qwen3.8-27b swift-qwen3.8-27b-paro-mxfp6
@@ -171,6 +112,71 @@ services:
       --compilation-config '{"pass_config": {"fuse_norm_quant": true, "fuse_act_quant": true}, "compile_sizes": [1, 2, 4, 8], "inductor_compile_config": {"enable_auto_functionalized_v2": false, "size_asserts": false, "alignment_asserts": false, "scalar_asserts": false, "combo_kernels": true, "benchmark_combo_kernel": true, "triton.cooperative_reductions": true}}'
       --host 0.0.0.0
       --port 8180
+
+  # ── Alternate models (opt-in profiles) ────────────────────────────────────
+  # Both cards are committed to `vllm`, so an alternate model REPLACES it;
+  # `./model use <name>` does the swap (README "Switching models"). Each
+  # alternate takes the `vllm` alias on the stack net so Caddy's /v1/* route
+  # and every client URL keep working. To add one, merge *vllm-base:
+  #
+  #   vllm-foo:
+  #     <<: *vllm-base
+  #     container_name: vllm-foo
+  #     profiles: ["foo"]
+  #     networks:
+  #       stack: { aliases: [vllm] }
+  #       egress: {}
+  #     command: >
+  #       org/Model --served-model-name foo --host 0.0.0.0 --port 8180 -tp 2 ...
+
+  # Qwen3.8-Flash-Next (125B MoE, 6B active) on StillDeadcode's radiance engine (C++/HIP, not
+  # vLLM): 4-bit experts, int8 trunk, MTP 3, vision. Experts that miss VRAM stream from a 12 GiB
+  # pinned host pool per card; the 47.7 GiB n-gram table is read off disk. Own image, so no
+  # *vllm-base. `./model use flash`. README "Qwen3.8-Flash-Next".
+  vllm-flash:
+    image: docker.io/stilldeadcode/radiance:1.3.0
+    container_name: vllm-flash
+    profiles: ["flash"]
+    restart: unless-stopped
+    init: true                     # engine isn't PID 1; finishes its step and frees the cards on SIGTERM
+    stop_grace_period: 60s
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - "39"                       # host video gid (image has no video group by name)
+      - "105"
+    security_opt:
+      - label=disable
+      - seccomp=unconfined         # io_uring (n-gram reads) + ROCm's NUMA calls
+    networks:
+      stack: { aliases: [vllm] }
+    expose:
+      - "8180"
+    volumes:
+      # chattr +C dir: btrfs compression would push the n-gram reads through the page cache.
+      - ./models/rad:/models:ro
+      - ./radiance-cache/flashnext:/data   # prefix cache disk tier
+    # Upstream's flashnext.yaml flags. Disk tier shrunk to fit /home; headroom 180 (engine's pick:
+    # the desktop holds VRAM on card 0); reasoning default medium
+    # (template default is xhigh, which eats max_tokens on short turns).
+    command: >
+      --model /models/qwen3.8-next-flash-fp8-iq4r-moe.rad
+      --served-model-name qwen3.8-flash-next
+      --host 0.0.0.0 --port 8180
+      --tp 2 --tp-wire wht6 --max-num-seqs 8 --max-model-len 200000
+      --placement expert_tiered --host-pool-mib 12288 --gpu-headroom-mib 180
+      --kv-cache-dtype fp8
+      --prefix-cache-host-mib 4096 --prefix-cache-dir /data/kvcache/flashnext
+      --prefix-cache-disk-mib 16384
+      --num-speculative-tokens 3 --max-num-batched-tokens 2048
+      --reasoning-effort medium
+    healthcheck:
+      test: ["CMD", "busybox", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8180/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 40
+      start_period: 900s
 
   # TLS termination. Hostnames + routing live in configs/caddy/conf/Caddyfile;
   # client trust setup and the port-443 sysctl are in the README.
