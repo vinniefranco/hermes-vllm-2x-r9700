@@ -198,7 +198,7 @@ services:
       - ./configs/caddy/config:/config:Z
 
   hermes:
-    image: nousresearch/hermes-agent:latest
+    image: docker.io/nousresearch/hermes-agent:v0.21.6   # pin = desktop checkout's tag; bump both together
     container_name: hermes
     restart: unless-stopped
     command: gateway run
